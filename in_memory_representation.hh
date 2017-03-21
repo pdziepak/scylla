@@ -717,4 +717,168 @@ public:
     }
 };
 
+namespace containers {
+
+// If all containers are able to tell the size of the contained objects,
+// perhaps there is no need to have imr_type::size_when_serialized().
+
+template<typename T, size_t MaxElementCount>
+class sparse_array {
+    // make compatible with imr types so that it can be nested or stored
+    // inside other containers or structure
+
+    using offset_type = uint16_t; // choose using MaxElementCount
+    enum : size_t { header_size = (MaxElementCount + 1) * sizeof(offset_type) };
+
+    using pointer_type = uint8_t*;
+    pointer_type _ptr;
+private:
+    uint8_t* header_entry_for(size_t idx) const noexcept {
+        return _ptr + idx * sizeof(offset_type);
+    }
+
+    size_t end_position() const noexcept {
+        return internal::read_pod<offset_type>(header_entry_for(MaxElementCount));
+    }
+public:
+    template<typename Context>
+    class iterator : public std::iterator<std::forward_iterator_tag, T> {
+        const Context& _ctx;
+        pointer_type _base;
+        pointer_type _position;
+    private:
+        void skip_absent() noexcept {
+            auto header_end = _base + MaxElementCount * sizeof(offset_type);
+            while (_position != header_end) {
+                auto begin_pos = internal::read_pod<offset_type>(_position);
+                auto end_pos = internal::read_pod<offset_type>(_position + sizeof(offset_type));
+                if (begin_pos != end_pos) {
+                    break;
+                }
+                _position += sizeof(offset_type);
+            }
+        }
+    public:
+        iterator(const Context& ctx, pointer_type base, pointer_type pos) noexcept
+            : _ctx(ctx), _base(base), _position(pos) {
+            skip_absent();
+        }
+
+        std::pair<size_t, typename T::view> operator*() const noexcept {
+            auto idx = (_position - _base) / sizeof(offset_type);
+            auto ptr = _base + internal::read_pod<offset_type>(_position);
+            auto ctx = _ctx.context_for_element(idx); // do not require this member to be present
+            return std::make_pair(idx, T::make_view(ptr, ctx));
+        }
+
+        iterator& operator++() noexcept {
+            _position += sizeof(offset_type);
+            skip_absent();
+            return *this;
+        }
+        iterator operator++(int) noexcept {
+            auto it = *this;
+            operator++();
+            return it;
+        }
+
+        bool operator==(const iterator& other) noexcept {
+            return _position == other._position;
+        }
+        bool operator!=(const iterator& other) noexcept {
+            return !(*this == other);
+        }
+    };
+public:
+    explicit sparse_array(pointer_type ptr) noexcept : _ptr(ptr) {
+        for (auto i = 0u; i <= MaxElementCount; i++) {
+            internal::write_pod(header_size, header_entry_for(i));
+        }
+    }
+
+    template<typename Context>
+    struct range {
+        pointer_type _ptr;
+        const Context& _ctx;
+    public:
+        range(pointer_type ptr, const Context& ctx) noexcept : _ptr(ptr), _ctx(ctx) { }
+        auto begin() const noexcept {
+            return iterator<Context>(_ctx, _ptr, _ptr);
+        }
+        auto end() const noexcept {
+            return iterator<Context>(_ctx, _ptr, _ptr + MaxElementCount * sizeof(offset_type));
+        }
+
+        stdx::optional<typename T::view> operator[](size_t idx) noexcept {
+            auto entry = _ptr + idx * sizeof(offset_type);
+            auto begin_pos = internal::read_pod<offset_type>(entry);
+            auto end_pos = internal::read_pod<offset_type>(entry + sizeof(uint16_t));
+            if (begin_pos == end_pos) {
+                return stdx::nullopt;
+            }
+            return T::make_view(_ptr + begin_pos, _ctx.context_for_element(idx));
+        }
+    };
+
+    template<typename Context = decltype(no_context)>
+    auto elements_range(const Context& ctx = no_context) {
+        return range<Context>(_ptr, ctx);
+    }
+
+    template<typename... Args>
+    void insert(size_t idx, size_t size, Args&&... args) noexcept {
+        auto begin_pos = internal::read_pod<offset_type>(header_entry_for(idx));
+        auto end_pos = internal::read_pod<offset_type>(header_entry_for(idx + 1));
+        auto space = size_t(end_pos - begin_pos);
+        if (size != space) {
+            // assume there is room, just a matter for moving things around
+            auto array_end = _ptr + end_position();
+            if (size > space) {
+                auto delta = size - space;
+                std::copy_backward(_ptr + end_pos, array_end, array_end + delta);
+                for (auto i = idx + 1; i <= MaxElementCount; i++) {
+                    // vectorise with SSE?
+                    auto entry_pos = header_entry_for(i);
+                    auto off = internal::read_pod<offset_type>(entry_pos);
+                    off += delta;
+                    internal::write_pod(off, entry_pos);
+                }
+            } else {
+                auto delta = space - size;
+                std::copy(_ptr + end_pos, array_end, _ptr + end_pos - delta);
+                for (auto i = idx + 1; i <= MaxElementCount; i++) {
+                    // vectorise with SSE?
+                    auto entry_pos = header_entry_for(i);
+                    auto off = internal::read_pod<offset_type>(entry_pos);
+                    off -= delta;
+                    internal::write_pod(off, entry_pos);
+                }
+            }
+        }
+        T::serialize(_ptr + begin_pos, std::forward<Args>(args)...);
+    }
+
+    void erase(size_t idx) noexcept {
+        auto begin_pos = internal::read_pod<offset_type>(header_entry_for(idx));
+        auto end_pos = internal::read_pod<offset_type>(header_entry_for(idx + 1));
+        auto size = end_pos - begin_pos;
+        if (!size) {
+            return;
+        }
+        auto array_end = _ptr + end_position();
+        std::copy(_ptr + end_pos, array_end, _ptr + begin_pos);
+        for (auto i = idx + 1; i <= MaxElementCount; i++) {
+            // duplicated with insert's element shrinking
+            // vectorise with SSE?
+            auto entry_pos = header_entry_for(i);
+            auto off = internal::read_pod<offset_type>(entry_pos);
+            off -= size;
+            internal::write_pod(off, entry_pos);
+        }
+    }
+};
+
+
+}
+
 }
