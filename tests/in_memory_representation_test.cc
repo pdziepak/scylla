@@ -25,9 +25,13 @@
 #include <algorithm>
 #include <random>
 
+#include <boost/range/combine.hpp>
 #include <boost/range/irange.hpp>
+#include <boost/range/adaptor/sliced.hpp>
 #include <boost/range/algorithm/copy.hpp>
 #include <boost/range/algorithm/generate.hpp>
+#include <boost/range/algorithm/random_shuffle.hpp>
+#include <boost/range/algorithm_ext/iota.hpp>
 
 #include "in_memory_representation.hh"
 
@@ -551,6 +555,74 @@ BOOST_AUTO_TEST_CASE(test_nested_structure) {
         BOOST_CHECK_EQUAL(view.get<B>(ctx).get<B>().load(), b1_value);
         BOOST_CHECK(boost::range::equal(view.get<B>(ctx).get<C>(ctx), c1_data));
         BOOST_CHECK_EQUAL(view.get<C>().load(), c_value);
+    }
+}
+
+BOOST_AUTO_TEST_SUITE_END();
+
+BOOST_AUTO_TEST_SUITE(imr_containers);
+
+BOOST_AUTO_TEST_CASE(test_sparse_array) {
+    struct dummy_context {
+        int context_for_element(size_t) const { return 42; }
+    } ctx;
+    for (auto i : boost::irange(0, 10)) {
+        (void)i;
+
+        static constexpr auto value_count = 128;
+        std::vector<uint16_t> values(value_count);
+        boost::range::generate(values, random_int<uint16_t>);
+
+        std::vector<size_t> indicies(value_count);
+        boost::range::iota(indicies, 0);
+        boost::range::random_shuffle(indicies);
+
+        auto buffer = std::make_unique<uint8_t[]>(value_count * sizeof(uint16_t) * 4);
+        imr::containers::sparse_array<imr::compressed_integer<uint16_t>, value_count> array(buffer.get());
+
+        std::map<size_t, uint16_t> sorted;
+        for (auto i_v : boost::range::combine(indicies, values)) {
+            auto idx = boost::get<0>(i_v);
+            auto value = boost::get<1>(i_v);
+            auto size = imr::compressed_integer<uint16_t>::size_when_serialized(value);
+            array.insert(idx, size, value);
+            sorted[idx] = value;
+        }
+
+        size_t idx = 0;
+        for (auto it : array.elements_range(ctx)) {
+            BOOST_CHECK_EQUAL(sorted.count(idx), 1);
+            BOOST_CHECK_EQUAL(it.first, idx);
+            BOOST_CHECK_EQUAL(it.second.load(), sorted[idx]);
+            BOOST_CHECK_EQUAL(it.second.load(), array.elements_range(ctx)[idx].value().load());
+            idx++;
+        }
+        BOOST_CHECK_EQUAL(idx, value_count);
+
+        for (auto i : indicies) {
+            array.erase(i);
+        }
+
+        auto range = array.elements_range(ctx);
+        BOOST_CHECK(range.begin() == range.end());
+
+        boost::range::random_shuffle(indicies);
+        boost::range::random_shuffle(values);
+        sorted.clear();
+
+        for (auto i_v : boost::range::combine(indicies, values) | boost::adaptors::sliced(0, 13)) {
+            auto idx = boost::get<0>(i_v);
+            auto value = boost::get<1>(i_v);
+            auto size = imr::compressed_integer<uint16_t>::size_when_serialized(value);
+            array.insert(idx, size, value);
+            sorted[idx] = value;
+        }
+
+        for (auto it : array.elements_range(ctx)) {
+            BOOST_CHECK_EQUAL(sorted.count(it.first), 1);
+            BOOST_CHECK_EQUAL(it.second.load(), sorted[it.first]);
+            BOOST_CHECK_EQUAL(it.second.load(), array.elements_range(ctx)[it.first].value().load());
+        }
     }
 }
 
