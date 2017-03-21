@@ -34,6 +34,7 @@ public:
     using value_type = CharT;
     using pointer = CharT*;
     using iterator = CharT*;
+    using const_iterator = const CharT*;
 
     template<typename U, U N>
     basic_mutable_view(basic_sstring<CharT, U, N>& str)
