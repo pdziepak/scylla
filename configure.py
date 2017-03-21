@@ -295,6 +295,7 @@ scylla_tests = [
     'tests/cql_auth_syntax_test',
     'tests/querier_cache',
     'tests/meta_test',
+    'tests/imr_test',
 ]
 
 perf_tests = [
@@ -713,6 +714,7 @@ pure_boost_tests = set([
     'tests/enum_set_test',
     'tests/cql_auth_syntax_test',
     'tests/meta_test',
+    'tests/imr_test',
 ])
 
 tests_not_using_seastar_test_framework = set([
@@ -764,6 +766,7 @@ deps['tests/log_heap_test'] = ['tests/log_heap_test.cc']
 deps['tests/anchorless_list_test'] = ['tests/anchorless_list_test.cc']
 deps['tests/perf/perf_fast_forward'] += ['release.cc']
 deps['tests/meta_test'] = ['tests/meta_test.cc']
+deps['tests/imr_test'] = ['tests/imr_test.cc']
 
 warnings = [
     '-Wno-mismatched-tags',  # clang-only
