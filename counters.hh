@@ -207,14 +207,16 @@ public:
     }
 
     atomic_cell build(api::timestamp_type timestamp) const {
-        return atomic_cell::make_live_from_serializer(timestamp, serialized_size(), [this] (bytes::iterator out) {
-            serialize(out);
+        return atomic_cell::make_live_from_serializer(timestamp, serialized_size(), [this] (uint8_t* out) noexcept {
+            auto it = (bytes::iterator)out;
+            serialize(it);
         });
     }
 
     static atomic_cell from_single_shard(api::timestamp_type timestamp, const counter_shard& cs) {
-        return atomic_cell::make_live_from_serializer(timestamp, counter_shard::serialized_size(), [&cs] (bytes::iterator out) {
-            cs.serialize(out);
+        return atomic_cell::make_live_from_serializer(timestamp, counter_shard::serialized_size(), [&cs] (uint8_t* out) noexcept {
+            auto it = (bytes::iterator)out;
+            cs.serialize(it);
         });
     }
 
@@ -245,25 +247,27 @@ public:
 template<typename View>
 class basic_counter_cell_view {
 protected:
+    using view_type = std::conditional_t<std::is_same<View, ac_imr_schema::mutable_view>::value,
+                                         bytes_mutable_view, bytes_view>;
     atomic_cell_base<View> _cell;
 private:
-    class shard_iterator : public std::iterator<std::input_iterator_tag, basic_counter_shard_view<View>> {
-        typename View::pointer _current;
-        basic_counter_shard_view<View> _current_view;
+    class shard_iterator : public std::iterator<std::input_iterator_tag, basic_counter_shard_view<view_type>> {
+        typename view_type::pointer _current;
+        basic_counter_shard_view<view_type> _current_view;
     public:
         shard_iterator() = default;
-        shard_iterator(typename View::pointer ptr) noexcept
+        shard_iterator(typename view_type::pointer ptr) noexcept
             : _current(ptr), _current_view(ptr) { }
 
-        basic_counter_shard_view<View>& operator*() noexcept {
+        basic_counter_shard_view<view_type>& operator*() noexcept {
             return _current_view;
         }
-        basic_counter_shard_view<View>* operator->() noexcept {
+        basic_counter_shard_view<view_type>* operator->() noexcept {
             return &_current_view;
         }
         shard_iterator& operator++() noexcept {
             _current += counter_shard_view::size;
-            _current_view = basic_counter_shard_view<View>(_current);
+            _current_view = basic_counter_shard_view<view_type>(_current);
             return *this;
         }
         shard_iterator operator++(int) noexcept {
@@ -273,7 +277,7 @@ private:
         }
         shard_iterator& operator--() noexcept {
             _current -= counter_shard_view::size;
-            _current_view = basic_counter_shard_view<View>(_current);
+            _current_view = basic_counter_shard_view<view_type>(_current);
             return *this;
         }
         shard_iterator operator--(int) noexcept {
@@ -336,7 +340,7 @@ public:
     }
 };
 
-struct counter_cell_view : basic_counter_cell_view<bytes_view> {
+struct counter_cell_view : basic_counter_cell_view<ac_imr_schema::view> {
     using basic_counter_cell_view::basic_counter_cell_view;
 
     // Reversibly applies two counter cells, at least one of them must be live.
@@ -353,7 +357,7 @@ struct counter_cell_view : basic_counter_cell_view<bytes_view> {
     friend std::ostream& operator<<(std::ostream& os, counter_cell_view ccv);
 };
 
-struct counter_cell_mutable_view : basic_counter_cell_view<bytes_mutable_view> {
+struct counter_cell_mutable_view : basic_counter_cell_view<ac_imr_schema::mutable_view> {
     using basic_counter_cell_view::basic_counter_cell_view;
 
     void set_timestamp(api::timestamp_type ts) { _cell.set_timestamp(ts); }
