@@ -247,6 +247,7 @@ scylla_tests = [
     'tests/compress_test',
     'tests/chunked_vector_test',
     'tests/meta_test',
+    'tests/imr_test',
 ]
 
 apps = [
@@ -634,6 +635,7 @@ pure_boost_tests = set([
     'tests/compress_test',
     'tests/chunked_vector_test',
     'tests/meta_test',
+    'tests/imr_test',
 ])
 
 tests_not_using_seastar_test_framework = set([
@@ -677,6 +679,7 @@ deps['tests/allocation_strategy_test'] = ['tests/allocation_strategy_test.cc', '
 deps['tests/log_heap_test'] = ['tests/log_heap_test.cc']
 deps['tests/anchorless_list_test'] = ['tests/anchorless_list_test.cc']
 deps['tests/meta_test'] = ['tests/meta_test.cc']
+deps['tests/imr_test'] = ['tests/imr_test.cc']
 
 warnings = [
     '-Wno-mismatched-tags',  # clang-only
