@@ -75,20 +75,44 @@ namespace imr {
 
 namespace meta {
 
-template<typename U, size_t N, typename... Ts>
-struct do_find { };
+// TODO: using variable templates could significantly decrease the number of
+// created types making these TMP algorithms faster.
 
-template<typename U, size_t N, typename T, typename... Ts>
-struct do_find<U, N, T, Ts...> : do_find<U, N + 1, Ts...> { };
+namespace internal {
 
-template<typename U, size_t N, typename... Ts>
-struct do_find<U, N, U, Ts...> : std::integral_constant<size_t, N> { };
+template<bool... Vs>
+constexpr ssize_t do_find() {
+    ssize_t i = -1;
+    ssize_t j = 0;
+    auto ignore_me = { ssize_t(0), ((Vs && i == -1) ? i = j : j++)... };
+    (void)ignore_me;
+    return i;
+}
 
-// Returns (via member 'value') index of the first occurrence of type Tag in the
-// list of types Tags. If Tag is not found in Tags the member 'value' is not
-// present.
+template<ssize_t N>
+struct negative_to_empty : std::integral_constant<size_t, N> { };
+
+template<>
+struct negative_to_empty<-1> { };
+
+template<typename T>
+struct is_same_as {
+    template<typename U>
+    using type = std::is_same<T, U>;
+};
+
+}
+
+// Returns (via member 'value') index of the first type in the list of types
+// list of types Ts for which Predicate<T::value is true. If no such type is
+// found the member 'value' is not present.
+template<template <class> typename Predicate, typename... Ts>
+using find_if = internal::negative_to_empty<internal::do_find<Predicate<Ts>::value...>()>;
+
+// Returns (via member 'value') index of the first occurrence of type T in the
+// list of types Ts. If T is not found in Ts the member 'value' is not present.
 template<typename T, typename... Ts>
-struct find : do_find<T, 0, Ts...> { };
+using find = find_if<internal::is_same_as<T>::template type, Ts...>;
 
 template<size_t N, typename... Ts>
 struct get { };
@@ -103,13 +127,8 @@ struct get<0, T, Ts...> {
 
 // Returns (via member 'type') the first type in the provided list of types.
 // If the list of types is empty the member 'type' does not exist.
-template<typename... Elements>
-struct head { };
-
-template<typename Element, typename... Elements>
-struct head<Element, Elements...> {
-    using type = Element;
-};
+template<typename... Ts>
+using head = get<0, Ts...>;
 
 }
 
