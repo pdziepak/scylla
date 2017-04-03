@@ -666,6 +666,14 @@ public:
                 return visitor(type::type::make_view(_ptr, context));
             });
         }
+
+        template<typename Visitor, typename Context>
+        decltype(auto) visit_type(Visitor&& visitor, const Context& context) {
+            return choose_alternative(_alternative, [&] (auto object) {
+                using type = std::remove_pointer_t<decltype(object)>;
+                return visitor(static_cast<typename type::type*>(nullptr));
+            });
+        }
     };
 
     using view = basic_view<const_view::yes>;
@@ -896,6 +904,103 @@ public:
         return meta::head<Members...>::type::type::make_view(in, ctx);
     }
 };
+
+namespace methods {
+
+struct trivial_destructor {
+    static void run(...) noexcept { }
+};
+
+template<typename T>
+struct destructor : trivial_destructor { };
+
+template<typename T>
+using is_trivially_destructible = std::is_base_of<trivial_destructor, destructor<T>>;
+
+namespace internal {
+
+template<bool... Vs>
+constexpr bool conjunction() noexcept {
+    bool result = true;
+    auto ignore_me = { true, (result = Vs && result)... };
+    (void)ignore_me;
+    return result;
+}
+
+}
+
+template<typename T, typename... Members>
+struct generate_destructor : trivial_destructor { };
+
+template<typename Structure, typename... Tags, typename... Types>
+struct generate_destructor<Structure, member<Tags, Types>...> {
+    template<typename Context>
+    static void run(const uint8_t* ptr, const Context& context) noexcept {
+        auto view = Structure::make_view(ptr);
+        auto ignore_me = { 0, (destructor<Types>::run(ptr + view.template offset_of<Tags>(), context), 0)... };
+        (void)ignore_me;
+    }
+};
+
+template<typename Tag, typename Type>
+struct generate_destructor<optional<Tag, Type>> {
+    template<typename Context>
+    static void run(const uint8_t* ptr, const Context& context) noexcept {
+        if (context.template is_present<Tag>()) {
+            destructor<Type>::run(ptr, context);
+        }
+    }
+};
+
+template<typename Tag, typename... Members>
+struct generate_destructor<variant<Tag, Members...>> {
+    template<typename Context>
+    static void run(const uint8_t* ptr, const Context& context) noexcept {
+        auto view = variant<Tag, Members...>::make_view(ptr, context);
+        view.visit_type([&] (auto alternative_type) {
+            using type = std::remove_pointer_t<decltype(alternative_type)>;
+            destructor<type>::run(ptr, context);
+        }, context);
+    }
+};
+
+template<typename T>
+struct member_is_trivially_destructible;
+
+template<typename Tag, typename Type>
+struct member_is_trivially_destructible<member<Tag, Type>> : is_trivially_destructible<Type> { };
+
+template<template <class> typename Predicate, typename... Ts>
+using all_of = std::integral_constant<bool, internal::conjunction<Predicate<Ts>::value...>()>;
+
+template<typename... Members>
+struct destructor<structure<Members...>>
+    : std::conditional_t<all_of<member_is_trivially_destructible, Members...>::value,
+                         trivial_destructor,
+                         generate_destructor<structure<Members...>, Members...>>
+{ };
+
+template<typename Tag, typename Type>
+struct destructor<optional<Tag, Type>>
+    : std::conditional_t<is_trivially_destructible<Type>::value,
+                         trivial_destructor,
+                         generate_destructor<optional<Tag, Type>>>
+{ };
+
+template<typename Tag, typename... Members>
+struct destructor<variant<Tag, Members...>>
+    : std::conditional_t<all_of<member_is_trivially_destructible, Members...>::value,
+                         trivial_destructor,
+                         generate_destructor<variant<Tag, Members...>>>
+{ };
+
+
+template<typename T, typename Context = decltype(no_context)>
+void destroy(const uint8_t* ptr, const Context& context = no_context) {
+    destructor<T>::run(ptr, context);
+}
+
+}
 
 namespace containers {
 
