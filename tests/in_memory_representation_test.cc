@@ -42,16 +42,27 @@ static std::default_random_engine gen(rd());
 
 template<typename T>
 T random_int() {
-    std::uniform_int_distribution<T> dist;
+    static std::uniform_int_distribution<T> dist;
     return dist(gen);
 }
 
-bytes random_bytes() {
-    std::uniform_int_distribution<size_t> dist_length(0, 128 * 1024);
-    bytes b(bytes::initialized_later(), dist_length(gen));
+bool random_bool() {
+    static std::bernoulli_distribution dist;
+    return dist(gen);
+}
+
+bytes random_bytes(size_t n) {
+    bytes b(bytes::initialized_later(), n);
     boost::generate(b, [] { return random_int<bytes::value_type>(); });
     return b;
 }
+
+bytes random_bytes() {
+    static std::uniform_int_distribution<size_t> dist_length(0, 128 * 1024);
+    return random_bytes(dist_length(gen));
+}
+
+
 
 class A;
 class B;
@@ -357,6 +368,103 @@ BOOST_AUTO_TEST_CASE(test_optional) {
 
         auto view = O1::make_view(buffer.get());
         BOOST_CHECK_EQUAL(view.load(), value);
+    }
+}
+
+static constexpr auto data_size = 128;
+using V = imr::variant<A,
+                       imr::member<B, imr::compressed_integer<uint64_t>>,
+                       imr::member<C, imr::fixed_buffer<C>>>;
+
+struct test_variant_context {
+    bool _alternative_b;
+public:
+    template<typename Tag>
+    size_t size_of() const noexcept;
+
+    template<typename Tag>
+    auto get_alternative() const noexcept;
+};
+
+template<>
+size_t test_variant_context::size_of<C>() const noexcept {
+    return data_size;
+}
+
+template<>
+auto test_variant_context::get_alternative<A>() const noexcept {
+    if (_alternative_b) {
+        return V::index_for<B>();
+    } else {
+        return V::index_for<C>();
+    }
+}
+
+template<typename... Functions>
+struct do_build_visitor {
+    void operator()();
+};
+
+template<typename Function, typename... Functions>
+struct do_build_visitor<Function, Functions...> : Function, do_build_visitor<Functions...> {
+    do_build_visitor(Function&& fn, Functions&&... fns)
+        : Function(std::move(fn))
+        , do_build_visitor<Functions...>(std::move(fns)...)
+    { }
+
+    using Function::operator();
+    using do_build_visitor<Functions...>::operator();
+};
+
+template<typename... Functions>
+auto build_visitor(Functions&&... fns) {
+    return do_build_visitor<Functions...>(std::forward<Functions>(fns)...);
+}
+
+BOOST_AUTO_TEST_CASE(test_variant) {
+    for (auto i : boost::irange(0, random_test_iteration_count)) {
+        (void)i;
+
+        bool alternative_b = random_bool();
+
+        uint64_t integer = random_int<uint64_t>();
+        bytes data = random_bytes(data_size);
+
+        const size_t expected_size = alternative_b
+                                     ? imr::compressed_integer<uint64_t>::size_when_serialized(integer)
+                                     : data_size;
+
+        auto buffer = std::make_unique<uint8_t[]>(expected_size);
+
+        if (alternative_b) {
+            BOOST_CHECK_EQUAL(V::size_when_serialized<B>(integer), expected_size);
+            BOOST_CHECK_EQUAL(V::serialize<B>(buffer.get(), integer), expected_size);
+        } else {
+            BOOST_CHECK_EQUAL(V::size_when_serialized<C>(data), expected_size);
+            BOOST_CHECK_EQUAL(V::serialize<C>(buffer.get(), data), expected_size);
+        }
+
+        auto ctx = test_variant_context { alternative_b };
+
+        BOOST_CHECK_EQUAL(V::serialized_object_size(buffer.get(), ctx), expected_size);
+
+        auto view = V::make_view(buffer.get(), ctx);
+        view.visit(build_visitor(
+            [&] (imr::fixed_buffer<C>::view buf) {
+                if (alternative_b) {
+                    BOOST_FAIL("wrong variant alternative (C, expected B)");
+                } else {
+                    BOOST_CHECK(boost::equal(data, buf));
+                }
+            },
+            [&] (imr::compressed_integer<uint64_t>::view val) {
+                if (alternative_b) {
+                    BOOST_CHECK_EQUAL(val.load(), integer);
+                } else {
+                    BOOST_FAIL("wrong variant alternative (B, expected C)");
+                }
+            }
+        ), ctx);
     }
 }
 
