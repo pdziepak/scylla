@@ -90,6 +90,17 @@ struct do_find<U, N, U, Ts...> : std::integral_constant<size_t, N> { };
 template<typename T, typename... Ts>
 struct find : do_find<T, 0, Ts...> { };
 
+template<size_t N, typename... Ts>
+struct get { };
+
+template<size_t N, typename T, typename... Ts>
+struct get<N, T, Ts...> : get<N - 1, Ts...> { };
+
+template<typename T, typename... Ts>
+struct get<0, T, Ts...> {
+    using type = T;
+};
+
 // Returns (via member 'type') the first type in the provided list of types.
 // If the list of types is empty the member 'type' does not exist.
 template<typename... Elements>
@@ -283,6 +294,9 @@ using pointer = fixed_size_value<Type*>;
 // pair.
 template<typename Tag>
 struct fixed_buffer {
+    using view = bytes_view;
+    using mutable_view = bytes_mutable_view;
+
     template<typename Context>
     GCC6_CONCEPT(requires requires(const Context& ctx) {
         { ctx.template size_of<Tag>() } noexcept -> size_t;
@@ -535,6 +549,153 @@ struct structure_do_get_member<Tag, N, member<Tag, Type>, Members...>
 
 template<typename Tag, typename... Members>
 struct structure_get_member : structure_do_get_member<Tag, 0, Members...> { };
+
+namespace meta {
+
+// Perhaps not needed and the compiler is clever enough?
+template<size_t Offset, size_t N, template<size_t> typename Function>
+struct do_generate_branch_tree {
+    template<typename... Args>
+    static decltype(auto) run(size_t n, Args&&... args) {
+        if (n < Offset + N / 2) {
+            return do_generate_branch_tree<Offset, N / 2, Function>::run(n, std::forward<Args>(args)...);
+        } else {
+            return do_generate_branch_tree<Offset + N / 2, N - N / 2, Function>::run(n, std::forward<Args>(args)...);
+        }
+    }
+};
+
+template<size_t Offset, template<size_t> typename Function>
+struct do_generate_branch_tree<Offset, 1, Function> {
+    template<typename... Args>
+    static decltype(auto) run(size_t, Args&&... args) {
+        return Function<Offset>::run(std::forward<Args>(args)...);
+    }
+};
+
+template<size_t N, template<size_t> typename Function>
+struct generate_branch_tree : do_generate_branch_tree<0, N, Function> { };
+
+}
+
+template<size_t N, typename... Types>
+struct variant_alternative_visitor {
+    template<typename Visitor>
+    static decltype(auto) run(Visitor&& visitor) {
+        using type = typename meta::get<N, Types...>::type;
+        return visitor(static_cast<type*>(nullptr));
+    }
+};
+
+template<typename Tag, typename... Types> // Members/Alternatives
+struct variant {
+    class alternative_index {
+        size_t _index;
+    public:
+        constexpr explicit alternative_index(size_t idx) noexcept
+            : _index(idx) { }
+        constexpr size_t index() const noexcept { return _index; }
+    };
+
+    template<typename AlternativeTag>
+    constexpr static alternative_index index_for() noexcept {
+        using tmember = structure_get_member<AlternativeTag, Types...>;
+        return alternative_index(meta::find<member<AlternativeTag, typename tmember::type>, Types...>::value);
+    }
+private:
+    template<size_t N>
+    using alternative_visitor = variant_alternative_visitor<N, Types...>;
+
+    template<typename Visitor>
+    static decltype(auto) choose_alternative(alternative_index index, Visitor&& visitor) noexcept {
+        return meta::generate_branch_tree<sizeof...(Types), alternative_visitor>::run(index.index(), std::forward<Visitor>(visitor));
+    }
+public:
+    template<const_view is_const>
+    class basic_view {
+        using pointer_type = std::conditional_t<is_const == const_view::yes,
+                                                const uint8_t*, uint8_t*>;
+        pointer_type _ptr;
+        alternative_index _alternative;
+    private:
+        basic_view(pointer_type ptr, alternative_index idx) noexcept
+            : _ptr(ptr)
+            , _alternative(idx)
+        { }
+        friend class basic_view<const_view::no>;
+    public:
+        template<typename Context>
+        explicit basic_view(pointer_type ptr, const Context& context) noexcept
+            : _ptr(ptr)
+            , _alternative(context.template get_alternative<Tag>())
+        { }
+
+        operator basic_view<const_view::yes>() const noexcept {
+            return basic_view<const_view::yes>(_ptr, _alternative);
+        }
+
+        template<typename AlternativeTag>
+        auto as() noexcept {
+            using member = structure_get_member<AlternativeTag, Types...>;
+            return member::type::make_view(_ptr);
+        }
+
+        template<typename Visitor, typename Context>
+        decltype(auto) visit(Visitor&& visitor, const Context& context) {
+            return choose_alternative(_alternative, [&] (auto object) {
+                using type = std::remove_pointer_t<decltype(object)>;
+                return visitor(type::type::make_view(_ptr, context));
+            });
+        }
+    };
+
+    using view = basic_view<const_view::yes>;
+    using mutable_view = basic_view<const_view::no>;
+
+public:
+    template<typename Context>
+    GCC6_CONCEPT(requires requires(const Context& ctx) {
+        { ctx.template get_alternative<Tag>() } noexcept -> alternative_index;
+    })
+    static view make_view(const uint8_t* in, const Context& context) noexcept {
+        return view(in, context);
+    }
+
+    template<typename Context>
+    GCC6_CONCEPT(requires requires(const Context& ctx) {
+        { ctx.template get_alternative<Tag>() } noexcept -> alternative_index;
+    })
+    static mutable_view make_view(uint8_t* in, const Context& context) noexcept {
+        return mutable_view(in, context);
+    }
+
+public:
+    template<typename Context>
+    GCC6_CONCEPT(requires requires(const Context& ctx) {
+        { ctx.template get_alternative<Tag>() } noexcept -> alternative_index;
+    })
+    static size_t serialized_object_size(const uint8_t* in, const Context& context) noexcept {
+        return choose_alternative(context.template get_alternative<Tag>(), [&] (auto object) noexcept {
+            using type = std::remove_pointer_t<decltype(object)>;
+            return type::type::serialized_object_size(in, context);
+        });
+    }
+
+    template<typename AlternativeTag, typename... Args>
+    static size_t size_when_serialized(Args&&... args) noexcept {
+        using member = structure_get_member<AlternativeTag, Types...>;
+        return member::type::size_when_serialized(std::forward<Args>(args)...);
+    }
+
+    template<typename AlternativeTag, typename... Args>
+    static size_t serialize(uint8_t* out, Args&&... args) noexcept {
+        using member = structure_get_member<AlternativeTag, Types...>;
+        return member::type::serialize(out, std::forward<Args>(args)...);
+    }
+};
+
+template<typename Tag, typename... Types>
+using variant_member = member<Tag, variant<Tag, Types...>>;
 
 template<typename... Members>
 class structure_sizer {
