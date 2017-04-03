@@ -71,16 +71,40 @@ class C;
 BOOST_AUTO_TEST_SUITE(meta);
 
 template<typename T, typename = int>
-struct has_value : std::false_type { };
+struct do_has_value : std::false_type { };
 
 template<typename T>
-struct has_value<T, decltype((void)T::value, 0)> : std::true_type { };
+struct do_has_value<T, decltype((void)T::value, 0)> : std::true_type { };
+
+template<typename T>
+using has_value = do_has_value<T>;
 
 template<typename T, typename = int>
 struct has_type : std::false_type { };
 
 template<typename T>
 struct has_type<T, decltype(std::declval<typename T::type>(), 0)> : std::true_type { };
+
+BOOST_AUTO_TEST_CASE(test_meta_find_if) {
+    using Av = std::is_void<A>;
+    using Bv = std::is_void<B>;
+    using Cv = std::is_void<C>;
+
+    BOOST_CHECK((has_value<imr::meta::find_if<has_value, Av>>::value));
+    BOOST_CHECK_EQUAL((imr::meta::find_if<has_value, Av>::value), 0);
+    BOOST_CHECK_EQUAL((imr::meta::find_if<has_value, Av, B, C>::value), 0);
+    BOOST_CHECK_EQUAL((imr::meta::find_if<has_value, A, Bv, C>::value), 1);
+    BOOST_CHECK_EQUAL((imr::meta::find_if<has_value, A, B, Cv>::value), 2);
+
+    BOOST_CHECK((has_value<imr::meta::find_if<has_value, Av, Bv, Cv>>::value));
+    BOOST_CHECK_EQUAL((imr::meta::find_if<has_value, Av, Bv, Cv>::value), 0);
+    BOOST_CHECK_EQUAL((imr::meta::find_if<has_value, C, Av, Bv>::value), 1);
+    BOOST_CHECK_EQUAL((imr::meta::find_if<has_value, B, B, Av>::value), 2);
+
+    BOOST_CHECK(!(has_value<imr::meta::find_if<has_value>>::value));
+    BOOST_CHECK(!(has_value<imr::meta::find_if<has_value, B, C>>::value));
+    BOOST_CHECK(!(has_value<imr::meta::find_if<has_value, C, C>>::value));
+}
 
 BOOST_AUTO_TEST_CASE(test_meta_find) {
     BOOST_CHECK((has_value<imr::meta::find<A, A>>::value));
