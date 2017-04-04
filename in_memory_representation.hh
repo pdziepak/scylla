@@ -1021,6 +1021,28 @@ void destroy(const uint8_t* ptr, const Context& context = no_context) {
     destructor<T>::run(ptr, context);
 }
 
+template<typename T>
+struct mover : trivial_method<mover> { };
+
+using trivial_mover = trivial_method<mover>;
+
+template<typename T>
+using is_trivially_movable = has_trivial_method<mover, T>;
+
+
+template<typename... Members>
+struct mover<structure<Members...>> : get_method<mover, structure<Members...>> { };
+
+template<typename Tag, typename Type>
+struct mover<optional<Tag, Type>> : get_method<mover, optional<Tag, Type>> { };
+
+template<typename Tag, typename... Members>
+struct mover<variant<Tag, Members...>> : get_method<mover, variant<Tag, Members...>> { };
+
+template<typename T, typename Context = decltype(no_context)>
+void move(const uint8_t* ptr, const Context& context = no_context) {
+    mover<T>::run(ptr, context);
+}
 
 }
 
