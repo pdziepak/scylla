@@ -884,51 +884,111 @@ BOOST_AUTO_TEST_CASE(test_sparse_array) {
         boost::range::iota(indicies, 0);
         boost::range::random_shuffle(indicies);
 
-        auto buffer = std::make_unique<uint8_t[]>(value_count * sizeof(uint16_t) * 4);
-        imr::containers::sparse_array<imr::compressed_integer<uint16_t>, value_count> array(buffer.get());
+        using SA = imr::containers::sparse_array<imr::compressed_integer<uint16_t>, value_count>;
 
         std::map<size_t, uint16_t> sorted;
-        for (auto i_v : boost::range::combine(indicies, values)) {
-            auto idx = boost::get<0>(i_v);
-            auto value = boost::get<1>(i_v);
-            auto size = imr::compressed_integer<uint16_t>::size_when_serialized(value);
-            array.insert(idx, size, value);
-            sorted[idx] = value;
-        }
+        auto fill_array = [&] (auto serializer) {
+            for (auto i_v : boost::range::combine(indicies, values)) {
+                auto idx = boost::get<0>(i_v);
+                auto value = boost::get<1>(i_v);
+                serializer.emplace(idx, value);
+                sorted[idx] = value;
+            }
+            return serializer.done();
+        };
+
+        auto total_size = SA::size_when_serialized(fill_array);
+        BOOST_CHECK_LE(total_size, value_count * (sizeof(uint16_t) + sizeof(uint16_t) + 1) + sizeof(uint32_t));
+        auto buffer = std::make_unique<uint8_t[]>(total_size + 7);
+        auto buffer2 = std::make_unique<uint8_t[]>(total_size + 7);
+        BOOST_CHECK_EQUAL(SA::serialize(buffer.get(), fill_array), total_size);
 
         size_t idx = 0;
-        for (auto it : array.elements_range(ctx)) {
+        auto view = SA::make_view(buffer.get());
+        for (auto it : view.elements_range(ctx)) {
             BOOST_CHECK_EQUAL(sorted.count(idx), 1);
             BOOST_CHECK_EQUAL(it.first, idx);
             BOOST_CHECK_EQUAL(it.second.load(), sorted[idx]);
-            BOOST_CHECK_EQUAL(it.second.load(), array.elements_range(ctx)[idx].value().load());
+            BOOST_CHECK_EQUAL(it.second.load(), view.elements_range(ctx)[idx].value().load());
             idx++;
         }
         BOOST_CHECK_EQUAL(idx, value_count);
 
-        for (auto i : indicies) {
-            array.erase(i);
-        }
+        auto erase_all = [&] (auto serializer) {
+            for (auto i : indicies) {
+                serializer.erase(i);
+            }
+            return serializer.done();
+        };
+        BOOST_CHECK_EQUAL(SA::size_when_serialized(erase_all), sizeof(uint16_t) * 2);
+        BOOST_CHECK_EQUAL(SA::serialize(buffer2.get(), buffer.get(), erase_all), sizeof(uint16_t) * 2);
 
-        auto range = array.elements_range(ctx);
+        view = SA::make_view(buffer2.get());
+        auto range = view.elements_range(ctx);
         BOOST_CHECK(range.begin() == range.end());
 
         boost::range::random_shuffle(indicies);
         boost::range::random_shuffle(values);
         sorted.clear();
 
-        for (auto i_v : boost::range::combine(indicies, values) | boost::adaptors::sliced(0, 13)) {
-            auto idx = boost::get<0>(i_v);
-            auto value = boost::get<1>(i_v);
-            auto size = imr::compressed_integer<uint16_t>::size_when_serialized(value);
-            array.insert(idx, size, value);
-            sorted[idx] = value;
-        }
+        auto fill_with_some = [&] (auto serializer) {
+            for (auto i_v : boost::range::combine(indicies, values) | boost::adaptors::sliced(0, 13)) {
+                auto idx = boost::get<0>(i_v);
+                auto value = boost::get<1>(i_v);
+                serializer.emplace(idx, value);
+                sorted[idx] = value;
+            }
+            return serializer.done();
+        };
+        SA::serialize(buffer.get(), buffer2.get(), fill_with_some);
 
-        for (auto it : array.elements_range(ctx)) {
+        view = SA::make_view(buffer.get());
+        for (auto it : view.elements_range(ctx)) {
+            // test that we haven't missed anyting
             BOOST_CHECK_EQUAL(sorted.count(it.first), 1);
             BOOST_CHECK_EQUAL(it.second.load(), sorted[it.first]);
-            BOOST_CHECK_EQUAL(it.second.load(), array.elements_range(ctx)[it.first].value().load());
+            BOOST_CHECK_EQUAL(it.second.load(), view.elements_range(ctx)[it.first].value().load());
+        }
+
+        auto fill_with_more = [&] (auto serializer) {
+            for (auto i_v : boost::range::combine(indicies, values) | boost::adaptors::sliced(50, 72)) {
+                auto idx = boost::get<0>(i_v);
+                auto value = boost::get<1>(i_v);
+                serializer.emplace(idx, value);
+                sorted[idx] = value;
+            }
+            return serializer.done();
+        };
+        SA::serialize(buffer2.get(), buffer.get(), fill_with_more);
+
+        view = SA::make_view(buffer2.get());
+        for (auto it : view.elements_range(ctx)) {
+            BOOST_CHECK_EQUAL(sorted.count(it.first), 1);
+            BOOST_CHECK_EQUAL(it.second.load(), sorted[it.first]);
+            BOOST_CHECK_EQUAL(it.second.load(), view.elements_range(ctx)[it.first].value().load());
+        }
+
+        std::vector<int> random(value_count);
+        boost::generate(random, random_bool);
+
+        auto erase_some = [&] (auto serializer) {
+            for (auto idx : indicies | boost::adaptors::sliced(0, 72)) {
+                if (random[idx]) {
+                    serializer.erase(idx);
+                    sorted.erase(idx);
+                }
+            }
+            return serializer.done();
+        };
+        SA::serialize(buffer.get(), buffer2.get(), erase_some);
+
+        // TODO: test destructors and movers
+
+        view = SA::make_view(buffer.get());
+        for (auto it : view.elements_range(ctx)) {
+            BOOST_CHECK_EQUAL(sorted.count(it.first), 1);
+            BOOST_CHECK_EQUAL(it.second.load(), sorted[it.first]);
+            BOOST_CHECK_EQUAL(it.second.load(), view.elements_range(ctx)[it.first].value().load());
         }
     }
 }
