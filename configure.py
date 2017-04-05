@@ -244,6 +244,7 @@ scylla_tests = [
     'tests/vint_serialization_test',
     'tests/compress_test',
     'tests/in_memory_representation_test',
+    'tests/partition_data_test',
 ]
 
 apps = [
@@ -630,6 +631,7 @@ pure_boost_tests = set([
     'tests/vint_serialization_test',
     'tests/compress_test',
     'tests/in_memory_representation_test',
+    'tests/partition_data_test',
 ])
 
 tests_not_using_seastar_test_framework = set([
@@ -673,6 +675,7 @@ deps['tests/allocation_strategy_test'] = ['tests/allocation_strategy_test.cc', '
 deps['tests/log_histogram_test'] = ['tests/log_histogram_test.cc']
 deps['tests/anchorless_list_test'] = ['tests/anchorless_list_test.cc']
 deps['tests/in_memory_representation_test'] = ['tests/in_memory_representation_test.cc']
+deps['tests/partition_data_test'] = ['tests/partition_data_test.cc']
 
 warnings = [
     '-Wno-mismatched-tags',  # clang-only
