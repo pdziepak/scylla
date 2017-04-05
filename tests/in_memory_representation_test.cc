@@ -407,7 +407,7 @@ public:
     size_t size_of() const noexcept;
 
     template<typename Tag>
-    auto get_alternative() const noexcept;
+    auto active_alternative_of() const noexcept;
 };
 
 template<>
@@ -416,7 +416,7 @@ size_t test_variant_context::size_of<C>() const noexcept {
 }
 
 template<>
-auto test_variant_context::get_alternative<A>() const noexcept {
+auto test_variant_context::active_alternative_of<A>() const noexcept {
     if (_alternative_b) {
         return V::index_for<B>();
     } else {
@@ -829,11 +829,11 @@ struct test_variant_context {
     bool _alternative_b;
 public:
     template<typename Tag>
-    auto get_alternative() const noexcept;
+    auto active_alternative_of() const noexcept;
 };
 
 template<>
-auto test_variant_context::get_alternative<A>() const noexcept {
+auto test_variant_context::active_alternative_of<A>() const noexcept {
     if (_alternative_b) {
         return V::index_for<B>();
     } else {
