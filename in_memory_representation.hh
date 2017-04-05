@@ -638,33 +638,25 @@ public:
         using pointer_type = std::conditional_t<is_const == const_view::yes,
                                                 const uint8_t*, uint8_t*>;
         pointer_type _ptr;
-        alternative_index _alternative;
-    private:
-        basic_view(pointer_type ptr, alternative_index idx) noexcept
-            : _ptr(ptr)
-            , _alternative(idx)
-        { }
-        friend class basic_view<const_view::no>;
     public:
-        template<typename Context>
-        explicit basic_view(pointer_type ptr, const Context& context) noexcept
+        explicit basic_view(pointer_type ptr) noexcept
             : _ptr(ptr)
-            , _alternative(context.template get_alternative<Tag>())
         { }
 
         operator basic_view<const_view::yes>() const noexcept {
-            return basic_view<const_view::yes>(_ptr, _alternative);
+            return basic_view<const_view::yes>(_ptr);
         }
 
-        template<typename AlternativeTag>
-        auto as() noexcept {
+        template<typename AlternativeTag, typename Context = decltype(no_context)>
+        auto as(const Context& context = no_context) noexcept {
             using member = structure_get_member<AlternativeTag, Types...>;
-            return member::type::make_view(_ptr);
+            return member::type::make_view(_ptr, context);
         }
 
         template<typename Visitor, typename Context>
         decltype(auto) visit(Visitor&& visitor, const Context& context) {
-            return choose_alternative(_alternative, [&] (auto object) {
+            auto alt_idx = context.template active_alternative_of<Tag>();
+            return choose_alternative(alt_idx, [&] (auto object) {
                 using type = std::remove_pointer_t<decltype(object)>;
                 return visitor(type::type::make_view(_ptr, context));
             });
@@ -672,7 +664,8 @@ public:
 
         template<typename Visitor, typename Context>
         decltype(auto) visit_type(Visitor&& visitor, const Context& context) {
-            return choose_alternative(_alternative, [&] (auto object) {
+            auto alt_idx = context.template active_alternative_of<Tag>();
+            return choose_alternative(alt_idx, [&] (auto object) {
                 using type = std::remove_pointer_t<decltype(object)>;
                 return visitor(static_cast<typename type::type*>(nullptr));
             });
@@ -684,28 +677,22 @@ public:
 
 public:
     template<typename Context>
-    GCC6_CONCEPT(requires requires(const Context& ctx) {
-        { ctx.template get_alternative<Tag>() } noexcept -> alternative_index;
-    })
     static view make_view(const uint8_t* in, const Context& context) noexcept {
-        return view(in, context);
+        return view(in);
     }
 
     template<typename Context>
-    GCC6_CONCEPT(requires requires(const Context& ctx) {
-        { ctx.template get_alternative<Tag>() } noexcept -> alternative_index;
-    })
     static mutable_view make_view(uint8_t* in, const Context& context) noexcept {
-        return mutable_view(in, context);
+        return mutable_view(in);
     }
 
 public:
     template<typename Context>
     GCC6_CONCEPT(requires requires(const Context& ctx) {
-        { ctx.template get_alternative<Tag>() } noexcept -> alternative_index;
+        { ctx.template active_alternative_of<Tag>() } noexcept -> alternative_index;
     })
     static size_t serialized_object_size(const uint8_t* in, const Context& context) noexcept {
-        return choose_alternative(context.template get_alternative<Tag>(), [&] (auto object) noexcept {
+        return choose_alternative(context.template active_alternative_of<Tag>(), [&] (auto object) noexcept {
             using type = std::remove_pointer_t<decltype(object)>;
             return type::type::serialized_object_size(in, context);
         });
@@ -766,6 +753,20 @@ public:
     }
 };
 
+template<typename Tag, typename... Types, typename... Members>
+class structure_sizer<variant_member<Tag, Types...>, Members...> {
+    size_t _size;
+public:
+    explicit structure_sizer(size_t size) noexcept : _size(size) { }
+
+    template<typename AlternativeTag, typename... Args>
+    structure_sizer<Members...> serialize_as(Args&&... args) noexcept {
+        using type = variant<Tag, Types...>;
+        auto size = type::template size_when_serialized<AlternativeTag>(std::forward<Args>(args)...);
+        return structure_sizer<Members...>(size + _size);
+    }
+};
+
 template<typename... Members>
 struct structure_serializer {
     uint8_t* _out;
@@ -801,6 +802,20 @@ public:
 
     structure_serializer<Members...> skip() noexcept {
         return structure_serializer<Members...>(_out);
+    }
+};
+
+template<typename Tag, typename... Types, typename... Members>
+class structure_serializer<variant_member<Tag, Types...>, Members...> {
+    uint8_t* _out;
+public:
+    explicit structure_serializer(uint8_t* out) noexcept : _out(out) { }
+
+    template<typename AlternativeTag, typename... Args>
+    structure_serializer<Members...> serialize_as(Args&&... args) noexcept {
+        using type = variant<Tag, Types...>;
+        auto size = type::template size_when_serialized<AlternativeTag>(std::forward<Args>(args)...);
+        return structure_serializer<Members...>(_out + size);
     }
 };
 
