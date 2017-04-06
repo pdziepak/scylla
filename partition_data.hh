@@ -46,6 +46,8 @@ public:
 };
 
 struct cell {
+    static constexpr size_t maximum_internal_storage_length = 64;
+
     struct tags {
         class flags;
         class live;
@@ -73,17 +75,19 @@ struct cell {
         tags::empty
     >;
     using value_data_variant = imr::variant<tags::value_data,
-            imr::member<tags::pointer, imr::fixed_size_value<void*>>,
+        imr::member<tags::pointer, imr::fixed_size_value<void*>>,
         imr::member<tags::data, imr::fixed_buffer<tags::data>>
     >;
+    using variable_value = imr::structure<
+        imr::member<tags::value_size, imr::compressed_integer<uint32_t>>,
+        imr::member<tags::value_data, value_data_variant>
+    >;
+    using fixed_value = imr::fixed_buffer<tags::fixed_value>;
     using value_variant = imr::variant<tags::value,
         imr::member<tags::dead, imr::compressed_integer<int32_t>>,
         imr::member<tags::counter_update, imr::compressed_integer<int64_t>>,
-        imr::member<tags::fixed_value, imr::fixed_buffer<tags::fixed_value>>,
-        imr::member<tags::variable_value, imr::structure<
-            imr::member<tags::value_size, imr::compressed_integer<uint32_t>>,
-            imr::member<tags::value_data, value_data_variant>
-        >>
+        imr::member<tags::fixed_value, fixed_value>,
+        imr::member<tags::variable_value, variable_value>
     >;
     using structure = imr::structure<
         imr::member<tags::flags, flags>,
@@ -137,6 +141,32 @@ class cell::context {
     cell::flags::view _flags;
     type_info _type;
 public:
+    class variable_value_context {
+        size_t _value_size;
+    public:
+        explicit variable_value_context(size_t value_size) noexcept
+            : _value_size(value_size) { }
+
+        template<typename Tag>
+        auto active_alternative_of() const noexcept {
+            //if (_value_size > maximum_internal_storage_length) {
+            //    return value_data_variant::index_for<tags::pointer>();
+            //} else {
+                return value_data_variant::index_for<tags::data>();
+            //}
+        }
+
+        template<typename Tag>
+        size_t size_of() const noexcept {
+            return _value_size;
+        }
+
+        template<typename Tag>
+        auto context_for(...) const noexcept {
+            return *this;
+        }
+    };
+public:
     explicit context(cell::flags::view flags, const type_info& tinfo) noexcept
         : _flags(flags), _type(tinfo) { }
 
@@ -148,7 +178,18 @@ public:
 
     template<typename Tag>
     size_t size_of() const noexcept;
+
+    template<typename Tag>
+    decltype(auto) context_for(const uint8_t*) const noexcept {
+        return *this;
+    }
 };
+
+template<>
+decltype(auto) cell::context::context_for<cell::tags::variable_value>(const uint8_t* ptr) const noexcept {
+    auto length = variable_value::get_first_member(ptr);
+    return variable_value_context(length.load());
+}
 
 template<>
 bool cell::context::is_present<cell::tags::exprigng>() const noexcept {
@@ -170,21 +211,34 @@ auto cell::context::active_alternative_of<cell::tags::value>() const noexcept {
 }
 
 template<>
-auto cell::context::active_alternative_of<cell::tags::value_data>() const noexcept {
-    assert(0 && "no support for subcontexts yet");
-    return value_data_variant::index_for<tags::data>();
-}
-
-template<>
 size_t cell::context::size_of<cell::tags::fixed_value>() const noexcept {
     return _flags.get<tags::empty>() ? 0 : _type.value_size();
 }
 
-template<>
-size_t cell::context::size_of<cell::tags::data>() const noexcept {
-    assert(0 && "no support for subcontexts yet");
-    return 0;
+// stolen from imr_test.cc
+
+template<typename... Functions>
+struct do_build_visitor {
+    void operator()();
+};
+
+template<typename Function, typename... Functions>
+struct do_build_visitor<Function, Functions...> : Function, do_build_visitor<Functions...> {
+    do_build_visitor(Function&& fn, Functions&&... fns)
+        : Function(std::move(fn))
+        , do_build_visitor<Functions...>(std::move(fns)...)
+    { }
+
+    using Function::operator();
+    using do_build_visitor<Functions...>::operator();
+};
+
+template<typename... Functions>
+auto build_visitor(Functions&&... fns) {
+    return do_build_visitor<Functions...>(std::forward<Functions>(fns)...);
 }
+
+// </stolen>
 
 class cell::view {
     context _context;
@@ -209,7 +263,22 @@ public:
 
     // TODO: support fragmented buffers
     bytes_view value() const noexcept {
-        abort();
+        // TODO: let visit take Visitors... and call build_visitor internally
+        return _view.get<tags::value>().visit(build_visitor(
+            [] (fixed_value::view view) { return view; },
+            [&] (variable_value::view view) {
+                return view.get<tags::value_data>().visit(build_visitor(
+                    [&view] (imr::fixed_size_value<void*>::view ptr) {
+                        auto size = view.get<tags::value_size>().load();
+                        return bytes_view(static_cast<bytes_view::pointer>(ptr.load()), size);
+                    },
+                    [] (imr::fixed_buffer<tags::data>::view data) {
+                        return data;
+                    }
+                ), _context.context_for<tags::variable_value>(view.raw_pointer())); // TODO: hide this raw_pointer
+            },
+            [] (...) -> bytes_view { __builtin_unreachable(); }
+        ), _context);
     }
 };
 
