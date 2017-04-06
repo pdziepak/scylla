@@ -240,6 +240,9 @@ public:
 
     template<typename Tag>
     size_t size_of() const noexcept;
+
+    template<typename Tag>
+    decltype(auto) context_for(...) const noexcept { return *this; }
 };
 
 template<>
@@ -361,6 +364,9 @@ BOOST_AUTO_TEST_CASE(test_compressed_int64_t) {
 struct test_optional_context {
     template<typename Tag>
     bool is_present() const noexcept;
+
+    template<typename Tag>
+    decltype(auto) context_for(...) const noexcept { return *this; }
 };
 template<>
 bool test_optional_context::is_present<A>() const noexcept {
@@ -408,6 +414,9 @@ public:
 
     template<typename Tag>
     auto active_alternative_of() const noexcept;
+
+    template<typename Tag>
+    decltype(auto) context_for(...) const noexcept { return *this; }
 };
 
 template<>
@@ -555,6 +564,9 @@ public:
 
     template<typename Tag>
     size_t size_of() const noexcept;
+
+    template<typename Tag>
+    decltype(auto) context_for(...) const noexcept { return *this; }
 };
 
 template<>
@@ -830,6 +842,9 @@ struct test_variant_context {
 public:
     template<typename Tag>
     auto active_alternative_of() const noexcept;
+
+    template<typename Tag>
+    decltype(auto) context_for(...) const noexcept { return *this; }
 };
 
 template<>
