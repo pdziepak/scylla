@@ -155,7 +155,10 @@ inline void write_pod(T obj, CharT* out) noexcept {
 
 enum class const_view { no, yes, };
 
-static struct { } no_context;
+static struct {
+    template<typename Tag>
+    auto context_for(...) const noexcept { return *this; }
+} no_context;
 
 template<typename Tag>
 class set_flag {
@@ -515,6 +518,7 @@ template<typename Tag, typename Type>
 struct optional {
     using underlying = Type;
 
+    // TODO: context_for for nested type
 public:
     template<typename Context = decltype(no_context)>
     static auto make_view(const uint8_t* in, const Context& ctx = no_context) noexcept {
@@ -643,6 +647,8 @@ public:
             : _ptr(ptr)
         { }
 
+        pointer_type raw_pointer() const noexcept { return _ptr; }
+
         operator basic_view<const_view::yes>() const noexcept {
             return basic_view<const_view::yes>(_ptr);
         }
@@ -650,7 +656,7 @@ public:
         template<typename AlternativeTag, typename Context = decltype(no_context)>
         auto as(const Context& context = no_context) noexcept {
             using member = structure_get_member<AlternativeTag, Types...>;
-            return member::type::make_view(_ptr, context);
+            return member::type::make_view(_ptr, context.template context_for<AlternativeTag>(_ptr));
         }
 
         template<typename Visitor, typename Context>
@@ -658,7 +664,7 @@ public:
             auto alt_idx = context.template active_alternative_of<Tag>();
             return choose_alternative(alt_idx, [&] (auto object) {
                 using type = std::remove_pointer_t<decltype(object)>;
-                return visitor(type::type::make_view(_ptr, context));
+                return visitor(type::type::make_view(_ptr, context.template context_for<typename type::tag>(_ptr)));
             });
         }
 
@@ -693,8 +699,8 @@ public:
     })
     static size_t serialized_object_size(const uint8_t* in, const Context& context) noexcept {
         return choose_alternative(context.template active_alternative_of<Tag>(), [&] (auto object) noexcept {
-            using type = std::remove_pointer_t<decltype(object)>;
-            return type::type::serialized_object_size(in, context);
+            using alternative = std::remove_pointer_t<decltype(object)>;
+            return alternative::type::serialized_object_size(in, context.template context_for<typename alternative::tag>(in));
         });
     }
 
@@ -814,7 +820,7 @@ public:
     template<typename AlternativeTag, typename... Args>
     structure_serializer<Members...> serialize_as(Args&&... args) noexcept {
         using type = variant<Tag, Types...>;
-        auto size = type::template size_when_serialized<AlternativeTag>(std::forward<Args>(args)...);
+        auto size = type::template serialize<AlternativeTag>(_out, std::forward<Args>(args)...);
         return structure_serializer<Members...>(_out + size);
     }
 };
@@ -845,15 +851,18 @@ struct structure {
                 if (idx + 1 >= sizeof...(Members)) {
                     return;
                 }
-                using member_type = typename std::remove_pointer_t<decltype(ptr)>::type;
+                using member = std::remove_pointer_t<decltype(ptr)>;
                 auto total_size = _offsets[idx];
-                auto this_size = member_type::serialized_object_size(_ptr + total_size, context);
+                auto offset = _ptr + total_size;
+                auto this_size = member::type::serialized_object_size(offset, context.template context_for<typename member::tag>(offset));
                 total_size += this_size;
                 _offsets[++idx] = total_size;
             };
             auto ignore_me = { (visit_member((Members*)0), 0)... };
             (void)ignore_me;
         }
+
+        pointer_type raw_pointer() const noexcept { return _ptr; }
 
         operator basic_view<const_view::yes>() const noexcept {
             return basic_view<const_view::yes>(_ptr, _offsets);
@@ -868,7 +877,8 @@ struct structure {
         template<typename Tag, typename Context = decltype(no_context)>
         auto get(const Context& context = no_context) const noexcept {
             using member = structure_get_member<Tag, Members...>;
-            return member::type::make_view(_ptr + _offsets[member::value], context);
+            auto offset = _ptr + _offsets[member::value];
+            return member::type::make_view(offset, context.template context_for<Tag>(offset));
         }
     };
 
@@ -889,8 +899,9 @@ public:
     static size_t serialized_object_size(const uint8_t* in, const Context& context = no_context) noexcept {
         size_t total_size = 0;
         auto visit_member = [&] (auto ptr) noexcept {
-            using member_type = typename std::remove_pointer_t<decltype(ptr)>::type;
-            auto this_size = member_type::serialized_object_size(in + total_size, context);
+            using member = std::remove_pointer_t<decltype(ptr)>;
+            auto offset = in + total_size;
+            auto this_size = member::type::serialized_object_size(offset, context.template context_for<typename member::tag>(offset));
             total_size += this_size;
         };
         auto ignore_me = { (visit_member((Members*)0), 0)... };
