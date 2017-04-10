@@ -673,7 +673,7 @@ public:
             auto alt_idx = context.template active_alternative_of<Tag>();
             return choose_alternative(alt_idx, [&] (auto object) {
                 using type = std::remove_pointer_t<decltype(object)>;
-                return visitor(static_cast<typename type::type*>(nullptr));
+                return visitor(static_cast<type*>(nullptr));
             });
         }
     };
@@ -909,20 +909,20 @@ public:
         return total_size;
     }
 
-    template<typename Writer>
-    GCC6_CONCEPT(requires requires(Writer wr, structure_sizer<Members...> ser) {
-        { wr(ser) } noexcept -> size_t;
+    template<typename Writer, typename... Args>
+    GCC6_CONCEPT(requires requires(Writer wr, structure_sizer<Members...> ser, Args... args) {
+        { wr(ser, args...) } noexcept -> size_t;
     })
-    static size_t size_when_serialized(Writer&& writer) noexcept {
-        return std::forward<Writer>(writer)(structure_sizer<Members...>(0));
+    static size_t size_when_serialized(Writer&& writer, Args&&... args) noexcept {
+        return std::forward<Writer>(writer)(structure_sizer<Members...>(0), std::forward<Args>(args)...);
     }
 
-    template<typename Writer>
-    GCC6_CONCEPT(requires requires(Writer wr, structure_serializer<Members...> ser) {
-        { wr(ser) } noexcept -> uint8_t*;
+    template<typename Writer, typename... Args>
+    GCC6_CONCEPT(requires requires(Writer wr, structure_serializer<Members...> ser, Args... args) {
+        { wr(ser, args...) } noexcept -> uint8_t*;
     })
-    static size_t serialize(uint8_t* out, Writer&& writer) noexcept {
-        auto ptr = std::forward<Writer>(writer)(structure_serializer<Members...>(out));
+    static size_t serialize(uint8_t* out, Writer&& writer, Args&&... args) noexcept {
+        auto ptr = std::forward<Writer>(writer)(structure_serializer<Members...>(out), std::forward<Args>(args)...);
         return ptr - out;
     }
 
@@ -973,8 +973,9 @@ template<template<class> typename Method, typename Structure, typename... Tags, 
 struct generate_method<Method, Structure, member<Tags, Types>...> {
     template<typename Context>
     static void run(const uint8_t* ptr, const Context& context) noexcept {
-        auto view = Structure::make_view(ptr);
-        auto ignore_me = { 0, (Method<Types>::run(ptr + view.template offset_of<Tags>(), context), 0)... };
+        auto view = Structure::make_view(ptr, context);
+        // (potential) FIXME: make sure offset_of() is not computed twice
+        auto ignore_me = { 0, (Method<Types>::run(ptr + view.template offset_of<Tags>(), context.template context_for<Tags>(ptr + view.template offset_of<Tags>())), 0)... };
         (void)ignore_me;
     }
 };
@@ -984,7 +985,7 @@ struct generate_method<Method, optional<Tag, Type>> {
     template<typename Context>
     static void run(const uint8_t* ptr, const Context& context) noexcept {
         if (context.template is_present<Tag>()) {
-            Method<Type>::run(ptr, context);
+            Method<Type>::run(ptr, context.template context_for<Tag>(ptr));
         }
     }
 };
@@ -996,7 +997,7 @@ struct generate_method<Method, variant<Tag, Members...>> {
         auto view = variant<Tag, Members...>::make_view(ptr, context);
         view.visit_type([&] (auto alternative_type) {
             using type = std::remove_pointer_t<decltype(alternative_type)>;
-            Method<type>::run(ptr, context);
+            Method<typename type::type>::run(ptr, context.template context_for<typename type::tag>(ptr));
         }, context);
     }
 };
