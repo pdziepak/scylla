@@ -22,6 +22,21 @@
 // something about data representation goes here
 #include "schema.hh"
 #include "in_memory_representation.hh"
+#include "imr/utils.hh"
+
+namespace imr {
+namespace methods {
+
+template<>
+struct destructor<imr::fixed_size_value<void*>> {
+    static void run(const uint8_t* ptr, ...) {
+        auto view = imr::fixed_size_value<void*>::make_view(ptr);
+        ::free(view.load());
+    }
+};
+
+}
+}
 
 namespace data {
 
@@ -66,6 +81,7 @@ struct cell {
         class value_data;
         class pointer;
         class data;
+        class external_data;
     };
 
     using flags = imr::flags<
@@ -103,7 +119,7 @@ struct cell {
     class view;
 
     static auto make_live(const type_info& ti, api::timestamp_type ts, bytes_view value) noexcept {
-        return [&ti, ts, value] (auto serializer) noexcept {
+        return [&ti, ts, value] (auto serializer, auto allocations) noexcept {
             auto ser = serializer
                 .serialize(imr::set_flag<tags::live>(), imr::set_flag<tags::empty>(value.empty()))
                 .serialize(ts)
@@ -113,10 +129,17 @@ struct cell {
                     return ser.template serialize_as<tags::fixed_value>(value);
                 } else {
                     return ser.template serialize_as<tags::variable_value>([&] (auto serializer) noexcept {
-                        return serializer
-                            .serialize(value.size())
-                            .template serialize_as<tags::data>(value) // TODO: external storage
-                            .done();
+                        auto ser = serializer
+                            .serialize(value.size());
+                        return [&] {
+                            if (value.size() <= maximum_internal_storage_length) {
+                                return ser.template serialize_as<tags::data>(value);
+                            } else {
+                                return ser.template serialize_as<tags::pointer>(
+                                    allocations.template serialize<imr::fixed_buffer<tags::external_data>>(value)
+                                );
+                            }
+                        }().done();
                     });
                 }
             }().done();
@@ -124,16 +147,18 @@ struct cell {
     }
 
     template<typename Builder>
-    static size_t size_of(Builder&& builder) noexcept {
-        return structure::size_when_serialized(std::forward<Builder>(builder));
+    static size_t size_of(Builder&& builder, imr::utils::external_object_allocator& allocator) noexcept {
+        return structure::size_when_serialized(std::forward<Builder>(builder), allocator.get_sizer());
     }
 
     template<typename Builder>
-    static size_t serialize(uint8_t* ptr, Builder&& builder) noexcept {
-        return structure::serialize(ptr, std::forward<Builder>(builder));
+    static size_t serialize(uint8_t* ptr, Builder&& builder, imr::utils::external_object_allocator& allocator) noexcept {
+        return structure::serialize(ptr, std::forward<Builder>(builder), allocator.get_serializer());
     }
 
     static view make_view(const type_info& ti, uint8_t* ptr) noexcept;
+
+    static void destroy(const type_info& ti, uint8_t* ptr) noexcept;
 };
 
 
@@ -149,11 +174,11 @@ public:
 
         template<typename Tag>
         auto active_alternative_of() const noexcept {
-            //if (_value_size > maximum_internal_storage_length) {
-            //    return value_data_variant::index_for<tags::pointer>();
-            //} else {
+            if (_value_size > maximum_internal_storage_length) {
+                return value_data_variant::index_for<tags::pointer>();
+            } else {
                 return value_data_variant::index_for<tags::data>();
-            //}
+            }
         }
 
         template<typename Tag>
@@ -284,6 +309,11 @@ public:
 
 inline cell::view cell::make_view(const type_info& ti, uint8_t* ptr) noexcept {
     return view(ti, ptr);
+}
+
+inline void cell::destroy(const type_info& ti, uint8_t* ptr) noexcept {
+    context ctx(structure::get_first_member(ptr), ti);
+    imr::methods::destroy<structure>(ptr, ctx);
 }
 
 }
