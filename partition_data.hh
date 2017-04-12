@@ -269,6 +269,9 @@ class cell::view {
     context _context;
     structure::view _view;
 public:
+    view(context ctx, structure::view v)
+        : _context(std::move(ctx)), _view(std::move(v)) { }
+
     view(const type_info& ti, const uint8_t* ptr)
         : _context(structure::get_first_member(ptr), ti)
         , _view(structure::make_view(ptr, _context))
@@ -315,5 +318,99 @@ inline void cell::destroy(const type_info& ti, uint8_t* ptr) noexcept {
     context ctx(structure::get_first_member(ptr), ti);
     imr::methods::destroy<structure>(ptr, ctx);
 }
+
+struct row {
+    struct tags {
+        class cells;
+    };
+    static constexpr size_t max_cell_count = 16;
+    using cell_array = imr::containers::sparse_array<cell::structure, max_cell_count>;
+    using structure = imr::structure<
+        imr::member<tags::cells, cell_array>
+    >;
+
+    template<typename Writer, typename... Args>
+    static size_t size_of(Writer&& writer, Args&&... args) {
+        return structure::size_when_serialized([&writer, &args...] (auto serializer) {
+            return serializer
+                .serialize([&writer, &args...] (auto array_sizer) {
+                    return writer(row_builder<decltype(array_sizer)>(array_sizer), std::forward<Args>(args)...);
+                }).done();
+        });
+    }
+
+    template<typename Writer, typename... Args>
+    static size_t serialize(uint8_t* ptr, Writer&& writer, Args&&... args) {
+        return structure::serialize(ptr, [&writer, &args...] (auto serializer) {
+            return serializer
+                .serialize([&writer, &args...] (auto array_serializer) {
+                    return writer(row_builder<decltype(array_serializer)>(array_serializer), std::forward<Args>(args)...);
+                }).done();
+        });
+    }
+
+    // TODO: how to deal with fragmented rows?
+    template<typename Writer>
+    class row_builder {
+        Writer _writer;
+    public:
+        explicit row_builder(Writer wr) : _writer(wr) { }
+
+        template<typename... Args>
+        row_builder& set_live_cell(column_id id, Args&&... args) {
+            _writer.emplace(id, std::forward<Args>(args)...);
+            return *this;
+        }
+        row_builder& remove_cell(column_id id) noexcept {
+            _writer.erase(id);
+            return *this;
+        }
+        auto done() noexcept {
+            return _writer.done();
+        }
+    };
+
+    class context {
+        const type_info& _ti;
+    public:
+        explicit context(const type_info& ti) : _ti(ti) { }
+
+        auto context_for_element(size_t, const uint8_t* ptr) const noexcept {
+            return cell::context(cell::structure::get_first_member(ptr), _ti);
+        }
+
+        template<typename Tag>
+        decltype(auto) context_for(...) const noexcept {
+            return *this;
+        }
+    };
+
+    static void destroy(const type_info& ti, const uint8_t* ptr) {
+        context ctx(ti);
+        imr::methods::destroy<structure>(ptr, ctx);
+    }
+
+    struct view {
+        context _context;
+        structure::view _view;
+    public:
+        explicit view(const uint8_t* ptr, const type_info& ti)
+            : _context(ti), _view(structure::make_view(ptr, _context)) { }
+
+        auto cells() const {
+            return _view.get<tags::cells>().elements_range(_context) | boost::adaptors::transformed([this] (auto&& element) {
+                // TODO: cell::view from cell::structure::view
+                auto id = element.first;
+                auto& view = element.second;
+                return std::make_pair(id, cell::view(_context.context_for_element(id, view.raw_pointer()), view));
+            });
+        }
+    };
+
+    static view make_view(const type_info& ti, const uint8_t* ptr) {
+        return view(ptr, ti);
+    }
+};
+
 
 }
