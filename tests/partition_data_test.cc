@@ -26,6 +26,9 @@
 
 #include <boost/range/irange.hpp>
 #include <boost/range/algorithm/generate.hpp>
+#include <boost/range/algorithm/random_shuffle.hpp>
+#include <boost/range/algorithm_ext/iota.hpp>
+#include <boost/range/algorithm/sort.hpp>
 
 #include "partition_data.hh"
 
@@ -96,5 +99,59 @@ BOOST_AUTO_TEST_CASE(test_live_cell_creation) {
         BOOST_CHECK(boost::equal(view.value(), value));
 
         data::cell::destroy(ti, buffer.get());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(test_row) {
+    std::uniform_int_distribution<size_t> cell_count_dist(0, data::row::max_cell_count);
+    std::uniform_int_distribution<size_t> length_dist(0, data::cell::maximum_internal_storage_length * 2);
+
+    for (auto i : boost::irange(0, random_test_iteration_count)) {
+        (void)i;
+
+        imr::utils::external_object_allocator allocator;
+
+        auto cell_count = cell_count_dist(gen);
+        std::vector<column_id> ids(data::row::max_cell_count);
+        boost::range::iota(ids, 0);
+        boost::range::random_shuffle(ids);
+        ids.erase(ids.begin() + cell_count, ids.end());
+        boost::range::sort(ids);
+
+        std::vector<std::pair<bytes, api::timestamp_type>> cells;
+        std::generate_n(std::back_inserter(cells), cell_count, [&] {
+            return std::make_pair(random_bytes(length_dist(gen)), random_int<api::timestamp_type>());
+        });
+        data::type_info ti;
+
+        auto writer = [&] (auto sizer, auto allocator) {
+            for (auto i = 0u; i < cell_count; i++) {
+                sizer.set_live_cell(ids[i], data::cell::make_live(ti, cells[i].second, cells[i].first), allocator);
+            }
+            return sizer.done();
+        };
+
+        // Phase 1: determine sizes of all objects
+        auto expected_size = data::row::size_of(writer, allocator.get_sizer());
+        BOOST_TEST_MESSAGE("row size: " << expected_size);
+
+        // Phase 2: allocate necessary buffers
+        auto buffer = std::make_unique<uint8_t[]>(expected_size + 7);
+        allocator.allocate_all();
+
+        // Phase 3: serialise objects
+        BOOST_CHECK_EQUAL(data::row::serialize(buffer.get(), writer, allocator.get_serializer()), expected_size);
+
+        auto view = data::row::make_view(ti, buffer.get());
+        size_t idx = 0;
+        for (auto&& i_a_c : view.cells()) {
+            BOOST_CHECK_EQUAL(ids[idx], i_a_c.first);
+            BOOST_CHECK_EQUAL(cells[idx].second, i_a_c.second.timestamp());
+            BOOST_CHECK(boost::equal(cells[idx].first, i_a_c.second.value()));
+            idx++;
+        }
+        BOOST_CHECK_EQUAL(idx, cell_count);
+
+        data::row::destroy(ti, buffer.get());
     }
 }
