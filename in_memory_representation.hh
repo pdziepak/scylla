@@ -852,9 +852,10 @@ struct structure {
                     return;
                 }
                 using member = std::remove_pointer_t<decltype(ptr)>;
+                using mtype = typename member::type;
                 auto total_size = _offsets[idx];
                 auto offset = _ptr + total_size;
-                auto this_size = member::type::serialized_object_size(offset, context.template context_for<typename member::tag>(offset));
+                auto this_size = mtype::serialized_object_size(offset, context.template context_for<typename member::tag>(offset));
                 total_size += this_size;
                 _offsets[++idx] = total_size;
             };
@@ -911,7 +912,7 @@ public:
 
     template<typename Writer, typename... Args>
     GCC6_CONCEPT(requires requires(Writer wr, structure_sizer<Members...> ser, Args... args) {
-        { wr(ser, args...) } noexcept -> size_t;
+        { wr(ser, args...) } -> size_t;
     })
     static size_t size_when_serialized(Writer&& writer, Args&&... args) noexcept {
         return std::forward<Writer>(writer)(structure_sizer<Members...>(0), std::forward<Args>(args)...);
@@ -919,7 +920,7 @@ public:
 
     template<typename Writer, typename... Args>
     GCC6_CONCEPT(requires requires(Writer wr, structure_serializer<Members...> ser, Args... args) {
-        { wr(ser, args...) } noexcept -> uint8_t*;
+        { wr(ser, args...) } -> uint8_t*;
     })
     static size_t serialize(uint8_t* out, Writer&& writer, Args&&... args) noexcept {
         auto ptr = std::forward<Writer>(writer)(structure_serializer<Members...>(out), std::forward<Args>(args)...);
@@ -1111,7 +1112,12 @@ public:
         return boost::accumulate(_sizes, (element_count + 2) * sizeof(uint16_t), std::plus<uint16_t>());
     }
 };
-
+struct dummy_allocator {
+    template<typename T, typename... Args>
+    uint8_t* serialize(Args&& ... args) noexcept {
+        return nullptr;
+    }
+};
 // TODO: try to merge phase1 with sizer
 template<typename T, size_t MaxElementCount>
 struct sparse_array_writer_phase1 {
@@ -1125,10 +1131,11 @@ public:
         }
     }
 
-    template<typename... Args>
-    sparse_array_writer_phase1& emplace(size_t idx, Args&&... args) noexcept {
+    //template<typename... Args>
+    template<typename Writer, typename... Args>
+    sparse_array_writer_phase1& emplace(size_t idx, Writer&& wr, Args&&... args) noexcept {
         //_overwritten[idx].set(true);
-        _sizes[idx] = T::size_when_serialized(std::forward<Args>(args)...);
+        _sizes[idx] = T::size_when_serialized(std::forward<Writer>(wr), dummy_allocator());
         return *this;
     }
 
@@ -1262,66 +1269,67 @@ public:
         explicit basic_view(pointer_type ptr) noexcept : _ptr(ptr) { }
 
         template<typename Context>
-        class iterator : public std::iterator<std::forward_iterator_tag, T> {
-            const Context& _ctx;
-            pointer_type _base;
-            pointer_type _position;
-        private:
-            void skip_absent() noexcept {
-                auto header_end = _base + MaxElementCount * sizeof(offset_type) + sizeof(uint16_t);
-                while (_position != header_end) {
-                    auto begin_pos = internal::read_pod<offset_type>(_position);
-                    auto end_pos = internal::read_pod<offset_type>(_position + sizeof(offset_type));
-                    if (begin_pos != end_pos) {
-                        break;
-                    }
-                    _position += sizeof(offset_type);
-                }
-            }
-        public:
-            iterator(const Context& ctx, pointer_type base, pointer_type pos) noexcept
-                : _ctx(ctx), _base(base), _position(pos) {
-                skip_absent();
-            }
-
-            std::pair<size_t, typename T::view> operator*() const noexcept {
-                auto idx = (_position - _base - 1) / sizeof(offset_type);
-                auto ptr = _base + internal::read_pod<offset_type>(_position);
-                auto ctx = _ctx.context_for_element(idx); // do not require this member to be present
-                return std::make_pair(idx, T::make_view(ptr, ctx));
-            }
-
-            iterator& operator++() noexcept {
-                _position += sizeof(offset_type);
-                skip_absent();
-                return *this;
-            }
-            iterator operator++(int) noexcept {
-                auto it = *this;
-                operator++();
-                return it;
-            }
-
-            bool operator==(const iterator& other) noexcept {
-                return _position == other._position;
-            }
-            bool operator!=(const iterator& other) noexcept {
-                return !(*this == other);
-            }
-        };
-
-        template<typename Context>
         struct range {
             pointer_type _ptr;
             const Context& _ctx;
         public:
+            class iterator : public std::iterator<std::input_iterator_tag, const std::pair<size_t, typename T::view>> {
+                const Context* _ctx;
+                pointer_type _base;
+                pointer_type _position;
+            private:
+                void skip_absent() noexcept {
+                    auto header_end = _base + MaxElementCount * sizeof(offset_type) + sizeof(uint16_t);
+                    while (_position != header_end) {
+                        auto begin_pos = internal::read_pod<offset_type>(_position);
+                        auto end_pos = internal::read_pod<offset_type>(_position + sizeof(offset_type));
+                        if (begin_pos != end_pos) {
+                            break;
+                        }
+                        _position += sizeof(offset_type);
+                    }
+                }
+            public:
+                iterator() = default;
+                iterator(const Context& ctx, pointer_type base, pointer_type pos) noexcept
+                        : _ctx(&ctx), _base(base), _position(pos) {
+                    skip_absent();
+                }
+
+                std::pair<size_t, typename T::view> operator*() const noexcept {
+                    auto idx = (_position - _base - 1) / sizeof(offset_type);
+                    auto ptr = _base + internal::read_pod<offset_type>(_position);
+                    auto ctx = _ctx->context_for_element(idx, ptr); // do not require this member to be present
+                    return std::make_pair(idx, T::make_view(ptr, ctx));
+                }
+
+                iterator& operator++() noexcept {
+                    _position += sizeof(offset_type);
+                    skip_absent();
+                    return *this;
+                }
+                iterator operator++(int) noexcept {
+                    auto it = *this;
+                    operator++();
+                    return it;
+                }
+
+                bool operator==(const iterator& other) const noexcept {
+                    return _position == other._position;
+                }
+                bool operator!=(const iterator& other) const noexcept {
+                    return !(*this == other);
+                }
+            };
+        public:
             range(pointer_type ptr, const Context& ctx) noexcept : _ptr(ptr), _ctx(ctx) { }
+            using const_iterator = iterator;
             auto begin() const noexcept {
-                return iterator<Context>(_ctx, _ptr, _ptr + sizeof(offset_type));
+                return iterator(_ctx, _ptr, _ptr + sizeof(offset_type));
             }
             auto end() const noexcept {
                 auto element_count = internal::read_pod<uint16_t>(_ptr);
-                return iterator<Context>(_ctx, _ptr, _ptr + (element_count + 1) * sizeof(offset_type));
+                return iterator(_ctx, _ptr, _ptr + (element_count + 1) * sizeof(offset_type));
             }
 
             stdx::optional<typename T::view> operator[](size_t idx) noexcept {
@@ -1343,8 +1351,14 @@ public:
 
     using view = basic_view<const_view::yes>;
 public:
-    static view make_view(const uint8_t* ptr) {
+    static view make_view(const uint8_t* ptr, ...) {
         return view(ptr);
+    }
+
+    template<typename Context = decltype(no_context)>
+    static size_t serialized_object_size(const uint8_t* ptr, const Context& = no_context) {
+        auto element_count = internal::read_pod<uint16_t>(ptr);
+        return internal::read_pod<uint16_t>(ptr + (element_count + 1) * sizeof(uint16_t));
     }
 
     template<typename Writer>
@@ -1428,6 +1442,43 @@ public:
     }
 };
 
+
+}
+
+namespace methods {
+
+template<template<class> typename Method, typename Type, size_t MaxCount>
+struct generate_method<Method, containers::sparse_array<Type, MaxCount>> {
+    template<typename Context>
+    static void run(const uint8_t* ptr, const Context& context) noexcept {
+        auto element_count = imr::internal::read_pod<uint16_t>(ptr);
+        if (!element_count) {
+            return;
+        }
+        auto current_offset = imr::internal::read_pod<uint16_t>(ptr + sizeof(uint16_t));
+        for (auto i = 0u; i < element_count; i++) {
+            auto next_offset = imr::internal::read_pod<uint16_t>(ptr + sizeof(uint16_t) * (i + 2));
+            if (current_offset != next_offset) {
+                auto element_ptr = ptr + current_offset;
+                Method<Type>::run(element_ptr, context.template context_for_element(i, element_ptr));
+            }
+            current_offset = next_offset;
+        }
+    }
+};
+
+template<template<class> typename Method, typename Type, size_t MaxCount>
+struct get_method<Method, containers::sparse_array<Type, MaxCount>>
+    : std::conditional_t<has_trivial_method<Method, Type>::value,
+                         trivial_method<Method>,
+                         generate_method<Method, containers::sparse_array<Type, MaxCount>>>
+{ };
+
+template<typename Type, size_t MaxCount>
+struct destructor<containers::sparse_array<Type, MaxCount>> : get_method<destructor, containers::sparse_array<Type, MaxCount>> { };
+
+template<typename Type, size_t MaxCount>
+struct mover<containers::sparse_array<Type, MaxCount>> : get_method<mover, containers::sparse_array<Type, MaxCount>> { };
 
 }
 
