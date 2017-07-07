@@ -1114,7 +1114,12 @@ public:
 };
 struct dummy_allocator {
     template<typename T, typename... Args>
-    uint8_t* serialize(Args&& ... args) noexcept {
+    uint8_t* allocate(Args&& ... args) noexcept {
+        return nullptr;
+    }
+
+    template<typename T, typename... Args>
+    uint8_t* allocate2(Args&& ... args) noexcept {
         return nullptr;
     }
 };

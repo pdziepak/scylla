@@ -43,6 +43,13 @@ namespace data {
 class type_info {
     uint16_t _fixed_size = 0;
 public:
+    struct fixed_size_tag { };
+    struct variable_size_tag { };
+
+    explicit type_info(fixed_size_tag, uint16_t size) noexcept
+        : _fixed_size(size) { }
+    explicit type_info(variable_size_tag) noexcept { }
+
     bool is_fixed_size() const noexcept {
         return !!_fixed_size;
     }
@@ -52,9 +59,12 @@ public:
     }
 };
 
-class schema_info {
+class schema_row_info {
     std::vector<type_info> _columns;
 public:
+    explicit schema_row_info(std::vector<type_info> tis) noexcept
+        : _columns(std::move(tis)) { }
+
     const type_info& type_info_for(column_id id) const noexcept {
         return _columns[id];
     }
@@ -82,6 +92,11 @@ struct cell {
         class pointer;
         class data;
         class external_data;
+
+        class chunk_back_pointer;
+        class chunk_next;
+        class chunk_data;
+        class last_chunk_size;
     };
 
     using flags = imr::flags<
@@ -115,8 +130,20 @@ struct cell {
         imr::member<tags::value, value_variant>
     >;
 
+    using external_last_chunk_size = imr::fixed_size_value<uint16_t>;
+    using external_last_chunk = imr::structure<
+        imr::member<tags::last_chunk_size, external_last_chunk_size>,
+        imr::member<tags::chunk_back_pointer, imr::fixed_size_value<void*>>,
+        imr::member<tags::chunk_data, imr::fixed_buffer<tags::chunk_data>>
+    >;
+
     class context;
+    class last_chunk_context;
+
     class view;
+
+    static thread_local imr::utils::lsa_migrate_fn<external_last_chunk,
+            imr::utils::context_factory<last_chunk_context>> lsa_last_chunk_migrate_fn;
 
     static auto make_live(const type_info& ti, api::timestamp_type ts, bytes_view value) noexcept {
         return [&ti, ts, value] (auto serializer, auto allocations) noexcept {
@@ -136,7 +163,16 @@ struct cell {
                                 return ser.template serialize_as<tags::data>(value);
                             } else {
                                 return ser.template serialize_as<tags::pointer>(
-                                    allocations.template serialize<imr::fixed_buffer<tags::external_data>>(value)
+                                    allocations.template allocate2<external_last_chunk>(&lsa_last_chunk_migrate_fn, [&serializer, value] (auto chunk_serializer) noexcept {
+                                        // FIXME
+                                        assert(value.size() < std::numeric_limits<uint16_t>::max());
+                                        // FIXME: try to avoid recursion once support for fragmentation is added
+                                        return chunk_serializer
+                                                .serialize(value.size())
+                                                .serialize(nullptr) //serializer.base_pointer()
+                                                .serialize(value)
+                                                .done();
+                                    })
                                 );
                             }
                         }().done();
@@ -161,6 +197,26 @@ struct cell {
     static void destroy(const type_info& ti, uint8_t* ptr) noexcept;
 };
 
+class cell::last_chunk_context {
+    external_last_chunk_size::view _size;
+public:
+    explicit last_chunk_context(const uint8_t* ptr) noexcept
+        : _size(external_last_chunk::get_first_member(ptr))
+    { }
+
+    template<typename Tag>
+    size_t size_of() const noexcept;
+
+    template<typename Tag>
+    auto context_for(...) const noexcept {
+        return *this;
+    }
+};
+
+template<>
+inline size_t cell::last_chunk_context::size_of<cell::tags::chunk_data>() const noexcept {
+    return _size.load();
+}
 
 class cell::context {
     cell::flags::view _flags;
@@ -298,7 +354,12 @@ public:
                 return view.get<tags::value_data>().visit(build_visitor(
                     [&view] (imr::fixed_size_value<void*>::view ptr) {
                         auto size = view.get<tags::value_size>().load();
-                        return bytes_view(static_cast<bytes_view::pointer>(ptr.load()), size);
+
+                        auto ex_ptr = static_cast<const uint8_t*>(ptr.load());
+                        auto ex_ctx = last_chunk_context(ex_ptr);
+                        auto ex_view = external_last_chunk::make_view(ex_ptr, ex_ctx);
+                        assert(size == ex_view.get<tags::last_chunk_size>(ex_ctx).load());
+                        return ex_view.get<tags::chunk_data>(ex_ctx);
                     },
                     [] (imr::fixed_buffer<tags::data>::view data) {
                         return data;
@@ -371,12 +432,12 @@ struct row {
     };
 
     class context {
-        const type_info& _ti;
+        const schema_row_info& _sri;
     public:
-        explicit context(const type_info& ti) : _ti(ti) { }
+        explicit context(const schema_row_info& sri) : _sri(sri) { }
 
-        auto context_for_element(size_t, const uint8_t* ptr) const noexcept {
-            return cell::context(cell::structure::get_first_member(ptr), _ti);
+        auto context_for_element(size_t id, const uint8_t* ptr) const noexcept {
+            return cell::context(cell::structure::get_first_member(ptr), _sri.type_info_for(id));
         }
 
         template<typename Tag>
@@ -385,8 +446,8 @@ struct row {
         }
     };
 
-    static void destroy(const type_info& ti, const uint8_t* ptr) {
-        context ctx(ti);
+    static void destroy(const schema_row_info& sri, const uint8_t* ptr) {
+        context ctx(sri);
         imr::methods::destroy<structure>(ptr, ctx);
     }
 
@@ -394,8 +455,8 @@ struct row {
         context _context;
         structure::view _view;
     public:
-        explicit view(const uint8_t* ptr, const type_info& ti)
-            : _context(ti), _view(structure::make_view(ptr, _context)) { }
+        explicit view(const uint8_t* ptr, const schema_row_info& sri)
+            : _context(sri), _view(structure::make_view(ptr, _context)) { }
 
         auto cells() const {
             return _view.get<tags::cells>().elements_range(_context) | boost::adaptors::transformed([this] (auto&& element) {
@@ -407,10 +468,11 @@ struct row {
         }
     };
 
-    static view make_view(const type_info& ti, const uint8_t* ptr) {
-        return view(ptr, ti);
+    static view make_view(const schema_row_info& sri, const uint8_t* ptr) {
+        return view(ptr, sri);
     }
 };
 
 
 }
+

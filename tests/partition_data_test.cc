@@ -25,6 +25,7 @@
 #include <random>
 
 #include <boost/range/irange.hpp>
+#include <boost/range/algorithm/find.hpp>
 #include <boost/range/algorithm/generate.hpp>
 #include <boost/range/algorithm/random_shuffle.hpp>
 #include <boost/range/algorithm_ext/iota.hpp>
@@ -34,6 +35,39 @@
 
 // Don't make me link with the rest of Scylla because of a single symbol.
 standard_allocation_strategy standard_allocation_strategy_instance;
+
+static
+std::vector<const migrate_fn_type*>&
+static_migrators() {
+    static std::vector<const migrate_fn_type*> obj;
+    return obj;
+}
+
+namespace debug {
+
+std::vector<const migrate_fn_type*>* static_migrators = &::static_migrators();
+
+}
+
+
+uint32_t
+migrate_fn_type::register_migrator(const migrate_fn_type* m) {
+    static_migrators().push_back(m);
+    return static_migrators().size() - 1;
+}
+
+void
+migrate_fn_type::unregister_migrator(uint32_t index) {
+    static_migrators()[index] = nullptr;
+    // reuse freed slots? no need now
+}
+
+
+
+// This shouldn't be here
+thread_local imr::utils::context_factory<data::cell::last_chunk_context> lcc;
+thread_local imr::utils::lsa_migrate_fn<data::cell::external_last_chunk,
+        imr::utils::context_factory<data::cell::last_chunk_context>> data::cell::lsa_last_chunk_migrate_fn(lcc);
 
 // duplicated from imr_test.cc
 static constexpr auto random_test_iteration_count = 20;
@@ -74,7 +108,8 @@ BOOST_AUTO_TEST_CASE(test_live_cell_creation) {
 
         auto value = random_bytes(length_dist(gen));
         auto timestamp = random_int<api::timestamp_type>();
-        data::type_info ti;
+        auto ti = random_bool() ? data::type_info(data::type_info::variable_size_tag())
+                                : data::type_info(data::type_info::fixed_size_tag(), value.size());
 
         // Phase 1: determine sizes of all objects
         auto builder = data::cell::make_live(ti, timestamp, value);
@@ -82,7 +117,7 @@ BOOST_AUTO_TEST_CASE(test_live_cell_creation) {
         BOOST_TEST_MESSAGE("cell size: " << expected_size);
 
         BOOST_CHECK_EQUAL(allocator.requested_allocations_count(),
-                          value.size() > data::cell::maximum_internal_storage_length);
+                          value.size() > data::cell::maximum_internal_storage_length && !ti.is_fixed_size());
 
         // Phase 2: allocate necessary buffers
         allocator.allocate_all();
@@ -122,11 +157,24 @@ BOOST_AUTO_TEST_CASE(test_row) {
         std::generate_n(std::back_inserter(cells), cell_count, [&] {
             return std::make_pair(random_bytes(length_dist(gen)), random_int<api::timestamp_type>());
         });
-        data::type_info ti;
+        auto sri = data::schema_row_info(boost::copy_range<std::vector<data::type_info>>(
+            boost::irange<unsigned>(0, ids.back() + 1) | boost::adaptors::transformed([&] (auto id) {
+                if (random_bool()) {
+                    auto it = boost::find(ids, id);
+                    if (it != ids.end()) {
+                        return data::type_info(data::type_info::fixed_size_tag(), cells[std::distance(ids.begin(), it)].first.size());
+                    } else {
+                        return data::type_info(data::type_info::fixed_size_tag(), random_int<uint8_t>());
+                    }
+                } else {
+                    return data::type_info(data::type_info::variable_size_tag());
+                }
+            })
+        ));
 
         auto writer = [&] (auto sizer, auto allocator) {
             for (auto i = 0u; i < cell_count; i++) {
-                sizer.set_live_cell(ids[i], data::cell::make_live(ti, cells[i].second, cells[i].first), allocator);
+                sizer.set_live_cell(ids[i], data::cell::make_live(sri.type_info_for(ids[i]), cells[i].second, cells[i].first), allocator);
             }
             return sizer.done();
         };
@@ -142,7 +190,7 @@ BOOST_AUTO_TEST_CASE(test_row) {
         // Phase 3: serialise objects
         BOOST_CHECK_EQUAL(data::row::serialize(buffer.get(), writer, allocator.get_serializer()), expected_size);
 
-        auto view = data::row::make_view(ti, buffer.get());
+        auto view = data::row::make_view(sri, buffer.get());
         size_t idx = 0;
         for (auto&& i_a_c : view.cells()) {
             BOOST_CHECK_EQUAL(ids[idx], i_a_c.first);
@@ -152,6 +200,12 @@ BOOST_AUTO_TEST_CASE(test_row) {
         }
         BOOST_CHECK_EQUAL(idx, cell_count);
 
-        data::row::destroy(ti, buffer.get());
+        data::row::destroy(sri, buffer.get());
     }
 }
+
+BOOST_AUTO_TEST_CASE(test_rows_entry) {
+
+}
+
+// Test lsa migration for all of them

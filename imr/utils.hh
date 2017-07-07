@@ -26,11 +26,25 @@ namespace utils {
 
 static struct { } no_context;
 
-template<typename Structure, typename Context>
-class lsa_migrate_fn final : public migrate_fn_type {
-    const Context& _context;
+static struct {
+    static auto create(const void*) { return no_context; }
+} no_context_factory;
+
+template<typename Context>
+struct context_factory {
+    static Context create(const uint8_t* obj) {
+        return Context(obj);
+    }
+};
+
+template<typename Structure, typename ContextFactory> // concept of context factory
+class lsa_migrate_fn final : public migrate_fn_type { // EBO?
+    ContextFactory _context_factory;
 public:
-    explicit lsa_migrate_fn(const Context& context) noexcept : _context(context) { }
+    explicit lsa_migrate_fn(ContextFactory context_factory)
+        : migrate_fn_type(1)
+        , _context_factory(std::move(context_factory))
+    { }
 
     lsa_migrate_fn(lsa_migrate_fn&&) = delete;
     lsa_migrate_fn(const lsa_migrate_fn&) = delete;
@@ -40,17 +54,23 @@ public:
 
     virtual void migrate(void* src_ptr, void* dst_ptr, size_t size) const noexcept override {
         std::memcpy(dst_ptr, src_ptr, size);
-        methods::move<Structure>(static_cast<uint8_t*>(dst_ptr), _context);
+        auto dst = static_cast<uint8_t*>(dst_ptr);
+        methods::move<Structure>(dst, _context_factory.create(dst));
+    }
+
+    virtual size_t size(const void* obj_ptr) const noexcept override {
+        auto ptr = static_cast<const uint8_t*>(obj_ptr);
+        return Structure::serialized_object_size(ptr, _context_factory.create(ptr));
     }
 };
 
 template<typename Structure>
 struct default_lsa_migrate_fn {
-    static lsa_migrate_fn<Structure, decltype(no_context)> migrate_fn;
+    static lsa_migrate_fn<Structure, decltype(no_context_factory)> migrate_fn;
 };
 
 template<typename Structure>
-lsa_migrate_fn<Structure, decltype(no_context)> default_lsa_migrate_fn<Structure>::migrate_fn(no_context);
+lsa_migrate_fn<Structure, decltype(no_context_factory)> default_lsa_migrate_fn<Structure>::migrate_fn(no_context_factory);
 
 
 // LSA-aware helper for creating hybrids of C++ and IMR objects. Particularly
@@ -59,7 +79,7 @@ lsa_migrate_fn<Structure, decltype(no_context)> default_lsa_migrate_fn<Structure
 template<typename Header, typename Structure>
 GCC6_CONCEPT(requires std::is_nothrow_move_constructible<Header>::value
                    && std::is_nothrow_destructible<Header>::value)
-class object_with_header : public Header {
+class object_with_header final : public Header {
     using Header::Header;
     ~object_with_header() = default;
     object_with_header(object_with_header&&) = default;
@@ -89,7 +109,8 @@ public:
     class lsa_migrator final : migrate_fn_type {
         const Context& _context;
     public:
-        explicit lsa_migrator(const Context& context) noexcept : _context(context) { }
+        explicit lsa_migrator(const Context& context)
+            : migrate_fn_type(alignof(Header)), _context(context) { }
 
         lsa_migrator(lsa_migrator&&) = delete;
         lsa_migrator(const lsa_migrator&) = delete;
@@ -103,9 +124,14 @@ public:
             std::copy_n(src->imr_data(), size - sizeof(object_with_header), dst->imr_data());
             methods::move<Structure>(dst->imr_data(), _context);
         }
+
+        virtual size_t size(const void* obj_ptr) const noexcept override {
+            auto obj = static_cast<object_with_header*>(obj_ptr);
+            return sizeof(object_with_header) + Structure::serialized_object_size(obj->imr_data(), _context);
+        }
     };
 private:
-    static lsa_migrator<decltype(no_context)> _lsa_migrator;
+    static lsa_migrator<decltype(no_context_factory)> _lsa_migrator;
 public:
     template<typename HeaderArg, typename ObjectArg>
     GCC6_CONCEPT(requires std::is_nothrow_constructible<Header, HeaderArg>::value)
@@ -128,7 +154,7 @@ public:
 class external_object_allocator {
     union allocation {
     private:
-        void* _pointer;
+        std::pair<size_t, void*> _object; // ensure that pair is a trivially destructible
         std::pair<size_t, allocation_strategy::migrate_fn> _request; // ensure that pair is a trivially destructible
     public:
         explicit allocation(size_t n, allocation_strategy::migrate_fn fn) noexcept
@@ -136,14 +162,14 @@ class external_object_allocator {
 
         void allocate() {
             auto ptr = current_allocator().alloc(_request.second, _request.first, 1);
-            _pointer = ptr;
+            _object = std::make_pair(_request.first, ptr);
         }
 
         void free() noexcept {
-            current_allocator().free(_pointer);
+            current_allocator().free(_object.second, _object.first);
         }
 
-        void* pointer() const noexcept { return _pointer; }
+        void* pointer() const noexcept { return _object.second; }
     };
     std::deque<allocation> _allocations; // clustered list?
     size_t _position = 0;
@@ -183,12 +209,17 @@ public:
         explicit sizer(external_object_allocator& parent) noexcept
             : _parent(parent) { }
 
-        // FIXME: allow users to specify their own migrate_fn (for context-dependent
-        // movers).
         template<typename T, typename... Args>
-        uint8_t* serialize(Args&& ... args) {
+        uint8_t* allocate(Args&& ... args) {
             auto size = T::size_when_serialized(std::forward<Args>(args)...);
             _parent.reserve(size, &default_lsa_migrate_fn<T>::migrate_fn);
+            return nullptr;
+        }
+
+        template<typename T, typename... Args>
+        uint8_t* allocate2(migrate_fn_type* migrate_fn, Args&& ... args) {
+            auto size = T::size_when_serialized(std::forward<Args>(args)...);
+            _parent.reserve(size, migrate_fn);
             return nullptr;
         }
     };
@@ -200,10 +231,15 @@ public:
             : _parent(parent) { }
 
         template<typename T, typename... Args>
-        uint8_t* serialize(Args&& ... args) noexcept {
+        uint8_t* allocate(Args&& ... args) noexcept {
             auto ptr = _parent.get_next();
             T::serialize(ptr, std::forward<Args>(args)...);
             return ptr;
+        }
+
+        template<typename T, typename... Args>
+        uint8_t* allocate2(migrate_fn_type* migrate_fn, Args&& ... args) noexcept {
+            return allocate<T>(std::forward<Args>(args)...);
         }
     };
 
