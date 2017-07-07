@@ -1188,7 +1188,7 @@ private:
         for_each_live(seg, [this] (const object_descriptor* desc, void* obj) {
             auto size = desc->live_size(obj);
             auto dst = alloc_small(desc->migrator(), size, desc->alignment());
-            desc->migrator()->migrate(obj, dst);
+            desc->migrator()->migrate(obj, dst, size);
         });
 
         free_segment(seg, desc);
@@ -1454,9 +1454,10 @@ public:
             // Keep same size as before to maintain alignment
             desc.encode(dpos, pos - old_pos);
             if (desc.is_live()) {
+                auto size = desc.live_size(pos);
                 offset += pos - old_pos;
-                offset += desc.live_size(pos);
-                desc.migrator()->migrate(const_cast<char*>(pos), dpos);
+                offset += size;
+                desc.migrator()->migrate(const_cast<char*>(pos), dpos, size);
             } else {
                 offset += desc.dead_size();
             }
