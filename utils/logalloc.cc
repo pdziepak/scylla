@@ -1375,7 +1375,7 @@ private:
             auto size = desc->live_size(obj);
             auto dst = alloc_small(desc->migrator(), size, desc->alignment());
             _sanitizer.on_migrate(obj, size, dst);
-            desc->migrator()->migrate(obj, dst);
+            desc->migrator()->migrate(obj, dst, size);
         });
 
         free_segment(seg, desc);
@@ -1665,7 +1665,7 @@ public:
                 auto size = desc.live_size(pos);
                 offset += size;
                 _sanitizer.on_migrate(pos, size, dpos);
-                desc.migrator()->migrate(const_cast<char*>(pos), dpos);
+                desc.migrator()->migrate(const_cast<char*>(pos), dpos, size);
             } else {
                 offset += desc.dead_size();
             }
