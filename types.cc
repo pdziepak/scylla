@@ -47,6 +47,8 @@
 #include "utils/date.h"
 #include "mutation_partition.hh"
 
+#include "code_generator.hh"
+
 template<typename T>
 sstring time_point_to_string(const T& tp)
 {
@@ -127,6 +129,108 @@ struct simple_type_impl : concrete_type<T> {
     virtual std::experimental::optional<data_type> update_user_type(const shared_ptr<const user_type_impl> updated) const {
         return std::experimental::nullopt;
     }
+
+    virtual void generate_comparator(codegen::context& ctx) override {
+        auto zero = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, 0));
+        auto result_zero = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, 0, true));
+        auto result_plus = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, 1, true));
+        auto result_minus = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, -1, true));
+
+        auto a_len = ctx._a_len;
+        auto b_len = ctx._b_len;
+
+        auto a_eq_zero = ctx._builder.CreateICmpEQ(a_len, zero, "a_eq_zero");
+
+        auto a_zero = llvm::BasicBlock::Create(ctx._context, "a_zero", ctx._function);
+        auto a_non_zero = llvm::BasicBlock::Create(ctx._context, "a_non_zero");
+        ctx._builder.CreateCondBr(a_eq_zero, a_zero, a_non_zero);
+
+        ctx._builder.SetInsertPoint(a_zero); {
+            auto b_eq_zero = ctx._builder.CreateICmpEQ(b_len, zero, "b_eq_zero");
+
+            auto b_zero = llvm::BasicBlock::Create(ctx._context, "b_zero", ctx._function);
+            auto b_non_zero = llvm::BasicBlock::Create(ctx._context, "b_non_zero");
+            ctx._builder.CreateCondBr(b_eq_zero, b_zero, b_non_zero);
+
+            ctx._builder.SetInsertPoint(b_zero); {
+                ctx._builder.CreateStore(result_zero, ctx._return_value);
+                ctx._builder.CreateBr(ctx._return_block);
+            }
+
+            ctx._function->getBasicBlockList().push_back(b_non_zero);
+            ctx._builder.SetInsertPoint(b_non_zero); {
+                ctx._builder.CreateStore(result_minus, ctx._return_value);
+                ctx._builder.CreateBr(ctx._return_block);
+            }
+        }
+
+        ctx._function->getBasicBlockList().push_back(a_non_zero);
+        ctx._builder.SetInsertPoint(a_non_zero);
+
+        auto b_eq_zero = ctx._builder.CreateICmpEQ(b_len, zero, "b_eq_zero");
+
+        auto b_zero = llvm::BasicBlock::Create(ctx._context, "b_zero", ctx._function);
+        auto b_non_zero = llvm::BasicBlock::Create(ctx._context, "b_non_zero");
+        ctx._builder.CreateCondBr(b_eq_zero, b_zero, b_non_zero);
+
+        ctx._builder.SetInsertPoint(b_zero); {
+            ctx._builder.CreateStore(result_plus, ctx._return_value);
+            ctx._builder.CreateBr(ctx._return_block);
+        }
+
+        ctx._function->getBasicBlockList().push_back(b_non_zero);
+        ctx._builder.SetInsertPoint(b_non_zero);
+
+        auto a_ptr_r = ctx._a_ptr;
+        auto a_ptr = ctx._builder.CreateBitCast(a_ptr_r, llvm::Type::getIntNTy(ctx._context, sizeof(T) * 8)->getPointerTo(), "a_ptr");
+        auto b_ptr_r = ctx._b_ptr;
+        auto b_ptr = ctx._builder.CreateBitCast(b_ptr_r, llvm::Type::getIntNTy(ctx._context, sizeof(T) * 8)->getPointerTo(), "b_ptr");
+
+        llvm::Value* a_val = ctx._builder.CreateAlignedLoad(a_ptr, 1, "a_val_be");
+        llvm::Value* b_val = ctx._builder.CreateAlignedLoad(b_ptr, 1, "b_val_be");
+
+        if (sizeof(T) != 1) {
+            auto bswap_fn = sizeof(T) == 2
+                                ? ctx._bswap16
+                                : (sizeof(T) == 4 ? ctx._bswap32 : ctx._bswap64);
+            std::vector<llvm::Value*> values(1);
+            values[0] = a_val;
+            a_val = ctx._builder.CreateCall(bswap_fn, values, "a_val");
+            values[0] = b_val;
+            b_val = ctx._builder.CreateCall(bswap_fn, values, "b_val");
+        }
+
+        auto val_equal = llvm::BasicBlock::Create(ctx._context, "val_equal", ctx._function);
+        auto val_non_equal = llvm::BasicBlock::Create(ctx._context, "val_non_equal");
+
+        auto val_eq = ctx._builder.CreateICmpEQ(a_val, b_val, "val_eq");
+        ctx._builder.CreateCondBr(val_eq, val_equal, val_non_equal);
+
+        ctx._builder.SetInsertPoint(val_equal); {
+            ctx._builder.CreateStore(result_zero, ctx._return_value);
+            ctx._builder.CreateBr(ctx._return_block);
+        }
+
+        ctx._function->getBasicBlockList().push_back(val_non_equal);
+        ctx._builder.SetInsertPoint(val_non_equal);
+
+        auto val_less = llvm::BasicBlock::Create(ctx._context, "val_less", ctx._function);
+        auto val_greater = llvm::BasicBlock::Create(ctx._context, "val_greater");
+
+        auto val_lt = ctx._builder.CreateICmpSLT(a_val, b_val, "val_lt");
+        ctx._builder.CreateCondBr(val_lt, val_less, val_greater);
+
+        ctx._builder.SetInsertPoint(val_less); {
+            ctx._builder.CreateStore(result_minus, ctx._return_value);
+            ctx._builder.CreateBr(ctx._return_block);
+        }
+
+        ctx._function->getBasicBlockList().push_back(val_greater);
+        ctx._builder.SetInsertPoint(val_greater); {
+            ctx._builder.CreateStore(result_plus, ctx._return_value);
+            ctx._builder.CreateBr(ctx._return_block);
+        }
+    }
 };
 
 template<typename T>
@@ -153,6 +257,12 @@ struct integer_type_impl : simple_type_impl<T> {
             return 0;
         }
         return sizeof(v.get());
+    }
+    virtual int32_t compare(bytes_view v1, bytes_view v2) const override {
+        // FIXME: This obviously bad, we have two indirect calls one after
+        // another. compare() should be made non-virtual and call the provided
+        // function pointer.
+        return abstract_type::_module->tri_compare(v1, v2);
     }
     virtual data_value deserialize(bytes_view v) const override {
         auto x = read_simple_opt<T>(v);
@@ -199,6 +309,7 @@ struct integer_type_impl : simple_type_impl<T> {
         }
         return to_sstring(compose_value(b));
     }
+    virtual bool codegen_ready() const override { return true; }
 };
 
 struct byte_type_impl : integer_type_impl<int8_t> {
@@ -3065,6 +3176,45 @@ thread_local const shared_ptr<const abstract_type> varint_type(make_shared<varin
 thread_local const shared_ptr<const abstract_type> decimal_type(make_shared<decimal_type_impl>());
 thread_local const shared_ptr<const abstract_type> counter_type(make_shared<counter_type_impl>());
 thread_local const data_type empty_type(make_shared<empty_type_impl>());
+
+abstract_type::abstract_type(sstring name) : _name(name) { }
+abstract_type::~abstract_type() { }
+
+void abstract_type::codegen_what_can_be_codegened()
+{
+    // Yes, this was stolen from the function below.
+    static thread_local const std::unordered_map<sstring, data_type> types = {
+        { byte_type_name,      byte_type      },
+        { short_type_name,     short_type     },
+        { int32_type_name,     int32_type     },
+        { long_type_name,      long_type      },
+        { ascii_type_name,     ascii_type     },
+        { bytes_type_name,     bytes_type     },
+        { utf8_type_name,      utf8_type      },
+        { boolean_type_name,   boolean_type   },
+        { date_type_name,      date_type      },
+        { timeuuid_type_name,  timeuuid_type  },
+        { timestamp_type_name, timestamp_type },
+        { simple_date_type_name, simple_date_type },
+        { time_type_name,      time_type },
+        { uuid_type_name,      uuid_type      },
+        { inet_addr_type_name, inet_addr_type },
+        { float_type_name,     float_type     },
+        { double_type_name,    double_type    },
+        { varint_type_name,    varint_type    },
+        { decimal_type_name,   decimal_type   },
+        { counter_type_name,   counter_type   },
+        { empty_type_name,     empty_type     },
+    };
+
+    for (auto&& t : types) {
+        auto& dt = const_cast<abstract_type&>(*t.second);
+        if (!dt.codegen_ready()) {
+            continue;
+        }
+        dt._module = codegen::module::create(dt);
+    }
+}
 
 data_type abstract_type::parse_type(const sstring& name)
 {

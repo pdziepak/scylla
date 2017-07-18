@@ -405,12 +405,19 @@ class serialized_compare;
 class serialized_tri_compare;
 class user_type_impl;
 
+namespace codegen {
+class context;
+class module;
+}
+
 // Unsafe to access across shards unless otherwise noted.
 class abstract_type : public enable_shared_from_this<abstract_type> {
     sstring _name;
+protected:
+    std::unique_ptr<codegen::module> _module;
 public:
-    abstract_type(sstring name) : _name(name) {}
-    virtual ~abstract_type() {}
+    abstract_type(sstring name);
+    virtual ~abstract_type();
     virtual void serialize(const void* value, bytes::iterator& out) const = 0;
     void serialize(const data_value& value, bytes::iterator& out) const {
         return serialize(get_value_ptr(value), out);
@@ -488,6 +495,13 @@ protected:
         return is_compatible_with(other);
     }
 public:
+    static void codegen_what_can_be_codegened();
+    virtual bool codegen_ready() const { return false; }
+
+    virtual void generate_comparator(codegen::context& ctx) {
+        throw std::runtime_error("sorry, but no");
+    }
+
     bytes decompose(const data_value& value) const {
         if (!value._value) {
             return {};
