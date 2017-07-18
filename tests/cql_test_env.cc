@@ -36,6 +36,7 @@
 #include "schema_builder.hh"
 #include "tmpdir.hh"
 #include "db/query_context.hh"
+#include "code_generator.hh"
 
 // TODO: remove (#293)
 #include "message/messaging_service.hh"
@@ -253,6 +254,8 @@ public:
             if (!active.compare_exchange_strong(old_active, true)) {
                 throw std::runtime_error("Starting more than one cql_test_env at a time not supported due to singletons.");
             }
+            codegen::code_generator::initialize();
+            abstract_type::codegen_what_can_be_codegened();
             auto deactivate = defer([] {
                 bool old_active = true;
                 auto success = active.compare_exchange_strong(old_active, false);

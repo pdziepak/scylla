@@ -54,6 +54,7 @@
 #include "message/messaging_service.hh"
 #include <seastar/net/dns.hh>
 #include "service/cache_hitrate_calculator.hh"
+#include "code_generator.hh"
 
 thread_local disk_error_signal_type commit_error;
 thread_local disk_error_signal_type general_disk_error;
@@ -306,6 +307,8 @@ int main(int ac, char** av) {
     prometheus::config pctx;
     directories dirs;
 
+    codegen::code_generator::initialize();
+
     return app.run_deprecated(ac, av, [&] {
         if (help_version) {
             print("%s\n", scylla_version());
@@ -338,6 +341,8 @@ int main(int ac, char** av) {
         }
 
         tcp_syncookies_sanity();
+
+        abstract_type::codegen_what_can_be_codegened();
 
         return seastar::async([cfg, &db, &qp, &proxy, &mm, &ctx, &opts, &dirs, &pctx, &prometheus_server, &return_value, &cf_cache_hitrate_calculator] {
             read_config(opts, *cfg).get();
