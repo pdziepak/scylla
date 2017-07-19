@@ -119,6 +119,7 @@ public:
 
 class index_entry {
     temporary_buffer<char> _key;
+    mutable stdx::optional<dht::token> _token;
     uint64_t _position;
     temporary_buffer<char> _promoted_index_bytes;
     stdx::optional<promoted_index> _promoted_index;
@@ -130,6 +131,13 @@ public:
 
     key_view get_key() const {
         return key_view{get_key_bytes()};
+    }
+
+    const dht::token& token() const {
+        if (!_token) {
+            _token.emplace(dht::global_partitioner().get_token(get_key()));
+        }
+        return *_token;
     }
 
     uint64_t position() const {
