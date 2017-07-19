@@ -549,6 +549,8 @@ struct ring_position_comparator {
     int operator()(ring_position_view, ring_position_view) const;
     int operator()(ring_position_view, sstables::key_view) const;
     int operator()(sstables::key_view, ring_position_view) const;
+    int operator()(ring_position_view, sstables::key_view, const dht::token&) const;
+    int operator()(sstables::key_view, const dht::token&, ring_position_view) const;
 };
 
 // "less" comparator giving the same order as ring_position_comparator

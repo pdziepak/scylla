@@ -485,6 +485,14 @@ int ring_position_comparator::operator()(ring_position_view lh, ring_position_vi
 
 int ring_position_comparator::operator()(ring_position_view lh, sstables::key_view rh) const {
     auto rh_token = global_partitioner().get_token(rh);
+    return operator()(lh, rh, rh_token);
+}
+
+int ring_position_comparator::operator()(sstables::key_view a, ring_position_view b) const {
+    return -(*this)(b, a);
+}
+
+int ring_position_comparator::operator()(ring_position_view lh, sstables::key_view rh, const dht::token& rh_token) const {
     auto token_cmp = tri_compare(*lh._token, rh_token);
     if (token_cmp) {
         return token_cmp;
@@ -498,8 +506,8 @@ int ring_position_comparator::operator()(ring_position_view lh, sstables::key_vi
     return lh._weight;
 }
 
-int ring_position_comparator::operator()(sstables::key_view a, ring_position_view b) const {
-    return -(*this)(b, a);
+int ring_position_comparator::operator()(sstables::key_view a, const dht::token& a_token, ring_position_view b) const {
+    return -(*this)(b, a, a_token);
 }
 
 dht::partition_range
