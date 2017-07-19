@@ -34,6 +34,7 @@
 #include <vector>
 #include <unordered_map>
 #include <type_traits>
+#include "dht/i_partitioner.hh"
 
 // While the sstable code works with char, bytes_view works with int8_t
 // (signed char). Rather than change all the code, let's do a cast.
@@ -164,6 +165,7 @@ public:
 };
 
 struct summary_entry {
+    dht::token token;
     bytes key;
     uint64_t position;
 
