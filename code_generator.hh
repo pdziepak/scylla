@@ -39,6 +39,7 @@ struct context {
     llvm::Function* _function;
     llvm::AllocaInst* _return_value;
     llvm::BasicBlock* _return_block;
+    llvm::BasicBlock* _continue_block;
 
     llvm::Value* _a_ptr;
     llvm::Value* _a_len;
@@ -59,9 +60,11 @@ class module {
     class impl;
     std::unique_ptr<impl> _impl;
 
-    int32_t (*_tri_compare)(const void*, uint32_t, const void*, uint32_t);
+    int32_t (*_tri_compare)(const void*, uint32_t, const void*, uint32_t) = nullptr;
+    int32_t (*_prefix_equality_tri_compare)(const void*, const void*, uint32_t, const void*, uint32_t) = nullptr;
 public:
     static std::unique_ptr<module> create(abstract_type&);
+    static std::unique_ptr<module> create_for_compound(std::vector<abstract_type*>);
 
     module();
     ~module();
@@ -69,6 +72,12 @@ public:
     int tri_compare(bytes_view a, bytes_view b) noexcept {
         return _tri_compare(a.data(), a.size(), b.data(), b.size());
     }
+
+    int prefix_equality_tri_compare(bytes_view a, bytes_view b) noexcept {
+        return _prefix_equality_tri_compare(nullptr, a.data(), a.size(), b.data(), b.size());
+    }
+
+    auto get_prefix_equality_tri_compare_fn() const { return _prefix_equality_tri_compare; }
 };
 
 class code_generator {

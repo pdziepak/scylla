@@ -132,7 +132,6 @@ struct simple_type_impl : concrete_type<T> {
 
     virtual void generate_comparator(codegen::context& ctx) override {
         auto zero = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, 0));
-        auto result_zero = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, 0, true));
         auto result_plus = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, 1, true));
         auto result_minus = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, -1, true));
 
@@ -148,20 +147,12 @@ struct simple_type_impl : concrete_type<T> {
         ctx._builder.SetInsertPoint(a_zero); {
             auto b_eq_zero = ctx._builder.CreateICmpEQ(b_len, zero, "b_eq_zero");
 
-            auto b_zero = llvm::BasicBlock::Create(ctx._context, "b_zero", ctx._function);
-            auto b_non_zero = llvm::BasicBlock::Create(ctx._context, "b_non_zero");
-            ctx._builder.CreateCondBr(b_eq_zero, b_zero, b_non_zero);
+            auto b_non_zero = llvm::BasicBlock::Create(ctx._context, "b_non_zero", ctx._function);
+            ctx._builder.CreateCondBr(b_eq_zero, ctx._continue_block, b_non_zero);
 
-            ctx._builder.SetInsertPoint(b_zero); {
-                ctx._builder.CreateStore(result_zero, ctx._return_value);
-                ctx._builder.CreateBr(ctx._return_block);
-            }
-
-            ctx._function->getBasicBlockList().push_back(b_non_zero);
-            ctx._builder.SetInsertPoint(b_non_zero); {
-                ctx._builder.CreateStore(result_minus, ctx._return_value);
-                ctx._builder.CreateBr(ctx._return_block);
-            }
+            ctx._builder.SetInsertPoint(b_non_zero);
+            ctx._builder.CreateStore(result_minus, ctx._return_value);
+            ctx._builder.CreateBr(ctx._return_block);
         }
 
         ctx._function->getBasicBlockList().push_back(a_non_zero);
@@ -200,18 +191,11 @@ struct simple_type_impl : concrete_type<T> {
             b_val = ctx._builder.CreateCall(bswap_fn, values, "b_val");
         }
 
-        auto val_equal = llvm::BasicBlock::Create(ctx._context, "val_equal", ctx._function);
-        auto val_non_equal = llvm::BasicBlock::Create(ctx._context, "val_non_equal");
+        auto val_non_equal = llvm::BasicBlock::Create(ctx._context, "val_non_equal", ctx._function);
 
         auto val_eq = ctx._builder.CreateICmpEQ(a_val, b_val, "val_eq");
-        ctx._builder.CreateCondBr(val_eq, val_equal, val_non_equal);
+        ctx._builder.CreateCondBr(val_eq, ctx._continue_block, val_non_equal);
 
-        ctx._builder.SetInsertPoint(val_equal); {
-            ctx._builder.CreateStore(result_zero, ctx._return_value);
-            ctx._builder.CreateBr(ctx._return_block);
-        }
-
-        ctx._function->getBasicBlockList().push_back(val_non_equal);
         ctx._builder.SetInsertPoint(val_non_equal);
 
         auto val_less = llvm::BasicBlock::Create(ctx._context, "val_less", ctx._function);

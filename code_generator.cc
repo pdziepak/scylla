@@ -172,7 +172,15 @@ std::unique_ptr<module> module::create(abstract_type& t)
 
     ctx._builder.SetInsertPoint(block);
 
+    ctx._continue_block = llvm::BasicBlock::Create(ctx._context, "continue_block");
     t.generate_comparator(ctx);
+    ctx._function->getBasicBlockList().push_back(ctx._continue_block);
+    ctx._builder.SetInsertPoint(ctx._continue_block);
+
+    auto result_zero = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, 0, true));
+    ctx._builder.CreateStore(result_zero, ctx._return_value);
+    ctx._builder.CreateBr(ctx._return_block);
+
     ctx._function->getBasicBlockList().push_back(ctx._return_block);
 
     auto m = std::make_unique<module>();
@@ -180,6 +188,128 @@ std::unique_ptr<module> module::create(abstract_type& t)
     m->_tri_compare = m->_impl->find_symbol<decltype(m->_tri_compare)>("tri_compare");
     return m;
 }
+
+std::unique_ptr<module> module::create_for_compound(std::vector<abstract_type*> ts)
+{
+    // A lot of code duplication here.
+
+    auto name = ::join(",", ts | boost::adaptors::transformed(std::mem_fn(&abstract_type::name)));
+    logger.info("compiling prefix_equality_tri_compare for compound type \"({})\"", name);
+
+    context ctx(name);
+
+    {
+        std::vector<llvm::Type*> args(1);
+
+        args[0] = llvm::Type::getInt16Ty(ctx._context);
+        auto fn_type = llvm::FunctionType::get(llvm::Type::getInt16Ty(ctx._context), args, false);
+        ctx._bswap16 = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage, "llvm.bswap.i16", ctx._module.get());
+
+        args[0] = llvm::Type::getInt32Ty(ctx._context);
+        fn_type = llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx._context), args, false);
+        ctx._bswap32 = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage, "llvm.bswap.i32", ctx._module.get());
+
+        args[0] = llvm::Type::getInt64Ty(ctx._context);
+        fn_type = llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx._context), args, false);
+        ctx._bswap64 = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage, "llvm.bswap.i64", ctx._module.get());
+    }
+
+    std::vector<llvm::Type*> arg_types = {
+            llvm::Type::getVoidTy(ctx._context)->getPointerTo(),
+            llvm::Type::getInt8PtrTy(ctx._context),
+            llvm::Type::getInt32Ty(ctx._context),
+            llvm::Type::getInt8PtrTy(ctx._context),
+            llvm::Type::getInt32Ty(ctx._context),
+    };
+    auto func_type = llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx._context), arg_types, false);
+
+    ctx._function = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, "prefix_equality_tri_compare", ctx._module.get());
+
+    auto block = llvm::BasicBlock::Create(ctx._context, "entry", ctx._function);
+    ctx._builder.SetInsertPoint(block);
+
+    auto arg_it = ctx._function->args().begin();
+    arg_it++; // first argument is type for fallback comparators
+    arg_it->setName("a_ptr");
+    llvm::Value* a_ptr = &*arg_it++;
+    arg_it->setName("a_len");
+    auto a_len = &*arg_it++;
+    arg_it->setName("b_ptr");
+    llvm::Value* b_ptr = &*arg_it++;
+    arg_it->setName("b_len");
+    auto b_len = &*arg_it;
+
+    ctx._return_value = ctx._builder.CreateAlloca(llvm::Type::getInt32Ty(ctx._context), nullptr, "return_value");
+
+    ctx._return_block = llvm::BasicBlock::Create(ctx._context, "return_block");
+    ctx._builder.SetInsertPoint(ctx._return_block);
+    ctx._builder.CreateRet(ctx._builder.CreateLoad(ctx._return_value, "return_value"));
+
+    ctx._builder.SetInsertPoint(block);
+
+    auto a_ptr_end = ctx._builder.CreateGEP(a_ptr, a_len, "a_ptr_end");
+    auto b_ptr_end = ctx._builder.CreateGEP(b_ptr, b_len, "b_ptr_end");
+
+    auto const2 = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, 2));
+
+    auto end_equal_block = llvm::BasicBlock::Create(ctx._context, "end_equal_block");
+
+    for (auto&& t : ts) {
+        auto a_end = ctx._builder.CreateICmpEQ(a_ptr, a_ptr_end, "a_end");
+        auto a_not_end = llvm::BasicBlock::Create(ctx._context, "a_not_end", ctx._function);
+        ctx._builder.CreateCondBr(a_end, end_equal_block, a_not_end);
+        ctx._builder.SetInsertPoint(a_not_end);
+
+        auto b_end = ctx._builder.CreateICmpEQ(b_ptr, b_ptr_end, "b_end");
+        auto b_not_end = llvm::BasicBlock::Create(ctx._context, "b_not_end", ctx._function);
+        ctx._builder.CreateCondBr(b_end, end_equal_block, b_not_end);
+        ctx._builder.SetInsertPoint(b_not_end);
+
+        auto a_ptr_16 = ctx._builder.CreateBitCast(a_ptr, llvm::Type::getInt16PtrTy(ctx._context), "a_ptr16");
+        auto a1_len_be = ctx._builder.CreateAlignedLoad(a_ptr_16, 1, "a1_len16_be");
+
+        std::vector<llvm::Value*> values(1);
+        values[0] = a1_len_be;
+        auto a1_len = ctx._builder.CreateSExt(ctx._builder.CreateCall(ctx._bswap16, values, "a1_len16"), llvm::Type::getInt32Ty(ctx._context), "a1_len");
+        a_ptr = ctx._builder.CreateGEP(a_ptr, const2, "a1_ptr");
+
+        auto b_ptr_16 = ctx._builder.CreateBitCast(b_ptr, llvm::Type::getInt16PtrTy(ctx._context), "b_ptr16");
+        auto b1_len_be = ctx._builder.CreateAlignedLoad(b_ptr_16, 1, "b1_len16_be");
+
+        values[0] = b1_len_be;
+        auto b1_len = ctx._builder.CreateSExt(ctx._builder.CreateCall(ctx._bswap16, values, "b1_len16"), llvm::Type::getInt32Ty(ctx._context), "b1_len");
+        b_ptr = ctx._builder.CreateGEP(b_ptr, const2, "b1_ptr");
+
+        ctx._a_len = a1_len;
+        ctx._a_ptr = a_ptr;
+        ctx._b_len = b1_len;
+        ctx._b_ptr = b_ptr;
+
+        ctx._continue_block = llvm::BasicBlock::Create(ctx._context, "continue_block");
+        t->generate_comparator(ctx);
+        ctx._function->getBasicBlockList().push_back(ctx._continue_block);
+        ctx._builder.SetInsertPoint(ctx._continue_block);
+
+        a_ptr = ctx._builder.CreateGEP(a_ptr, a1_len, "a1_ptr");
+        b_ptr = ctx._builder.CreateGEP(b_ptr, b1_len, "a1_ptr");
+    }
+
+    ctx._builder.CreateBr(end_equal_block);
+
+    ctx._function->getBasicBlockList().push_back(end_equal_block);
+    ctx._builder.SetInsertPoint(end_equal_block);
+    auto result_zero = llvm::ConstantInt::get(ctx._context, llvm::APInt(32, 0, true));
+    ctx._builder.CreateStore(result_zero, ctx._return_value);
+    ctx._builder.CreateBr(ctx._return_block);
+
+    ctx._function->getBasicBlockList().push_back(ctx._return_block);
+
+    auto m = std::make_unique<module>();
+    m->_impl = std::make_unique<module::impl>(std::move(ctx._module));
+    m->_prefix_equality_tri_compare = m->_impl->find_symbol<decltype(m->_prefix_equality_tri_compare)>("prefix_equality_tri_compare");
+    return m;
+}
+
 
 module::module() { }
 module::~module() { }
