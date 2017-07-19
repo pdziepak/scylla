@@ -77,11 +77,8 @@ public:
         tri_compare(const schema& s) : _s(s)
         { }
         int operator()(const clustering_key_prefix& p1, int32_t w1, const clustering_key_prefix& p2, int32_t w2) const {
-            auto type = _s.get().clustering_key_prefix_type();
-            auto res = prefix_equality_tri_compare(type->types().begin(),
-                type->begin(p1), type->end(p1),
-                type->begin(p2), type->end(p2),
-                ::tri_compare);
+            auto& type = _s.get().clustering_key_prefix_type();
+            auto res = type->prefix_equality_tri_compare(p1, p2);
             if (res) {
                 return res;
             }

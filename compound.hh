@@ -29,6 +29,7 @@
 #include <boost/range/adaptor/transformed.hpp>
 #include "utils/serialization.hh"
 #include "unimplemented.hh"
+#include "code_generator.hh"
 
 enum class allow_prefixes { no, yes };
 
@@ -39,6 +40,19 @@ private:
     const bool _byte_order_equal;
     const bool _byte_order_comparable;
     const bool _is_reversed;
+
+    std::unique_ptr<codegen::module> _module;
+    int32_t (*_prefix_equality_tri_compare_fn)(const void* type, const void* a, uint32_t a_len, const void* b, uint32_t b_len);
+private:
+    static int32_t fallback_prefix_equality_tri_compare(const void* type, const void* a, uint32_t a_len, const void* b, uint32_t b_len) {
+        auto& ct = *static_cast<const compound_type*>(type);
+        auto bv1 = bytes_view(static_cast<bytes_view::const_pointer>(a), a_len);
+        auto bv2 = bytes_view(static_cast<bytes_view::const_pointer>(b), b_len);
+        return ::prefix_equality_tri_compare(ct._types.begin(),
+                                             ct.begin(bv1), ct.end(bv1),
+                                             ct.begin(bv2), ct.end(bv2),
+                                             ::tri_compare);
+    }
 public:
     static constexpr bool is_prefixable = AllowPrefixes == allow_prefixes::yes;
     using prefix_type = compound_type<allow_prefixes::yes>;
@@ -52,9 +66,24 @@ public:
             }))
         , _byte_order_comparable(false)
         , _is_reversed(_types.size() == 1 && _types[0]->is_reversed())
-    { }
+        , _prefix_equality_tri_compare_fn(fallback_prefix_equality_tri_compare)
+    {
+        std::vector<abstract_type*> atypes;
+        for (auto&& dt : _types) {
+            if (!dt->codegen_ready()) {
+                return;
+            }
+            atypes.emplace_back(const_cast<abstract_type*>(dt.get()));
+        }
+        _module = codegen::module::create_for_compound(std::move(atypes));
+        _prefix_equality_tri_compare_fn = _module->get_prefix_equality_tri_compare_fn();
+    }
 
     compound_type(compound_type&&) = default;
+
+    int prefix_equality_tri_compare(bytes_view bv1, bytes_view bv2) const {
+        return _prefix_equality_tri_compare_fn(this, bv1.data(), bv1.size(), bv2.data(), bv2.size());
+    }
 
     auto const& types() const {
         return _types;
