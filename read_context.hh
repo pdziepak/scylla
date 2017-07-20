@@ -190,6 +190,7 @@ public:
     row_cache::phase_type phase() const { return _phase; }
     const dht::decorated_key& key() const { return _sm->decorated_key(); }
     void on_underlying_created() { ++_underlying_created; }
+    bool _stop_consumer = false;
 private:
     future<> create_sm();
     future<> ensure_sm_created() {
@@ -206,6 +207,7 @@ public:
     void enter_partition(const dht::decorated_key& dk, mutation_source& snapshot, row_cache::phase_type phase) {
         _phase = phase;
         _sm = {};
+        _stop_consumer = false;
         _underlying_snapshot = snapshot;
         _key = dk;
     }
@@ -214,13 +216,39 @@ public:
     void enter_partition(streamed_mutation&& sm, row_cache::phase_type phase) {
         _phase = phase;
         _sm = std::move(sm);
+        _stop_consumer = false;
         _underlying_snapshot = {};
     }
     // Fast forwards the underlying streamed_mutation to given range.
     future<> fast_forward_to(position_range range) {
+        _stop_consumer = false;
         return ensure_sm_created().then([this, range = std::move(range)] () mutable {
             ++_cache._tracker._stats.underlying_row_skips;
             return _sm->fast_forward_to(std::move(range));
+        });
+    }
+    // Consumes mutation fragments until StopCondition is true.
+    // Can be called only after at least a single call to fast_forward_to().
+    template<typename StopCondition, typename ConsumeMF, typename ConsumeEOS>
+    GCC6_CONCEPT(requires requires(StopCondition stop, ConsumeMF consume_mf, ConsumeEOS consume_eos, mutation_fragment mf) {
+        { stop() } -> bool;
+        { consume_mf(std::move(mf)) } -> void;
+        { consume_eos() } -> future<>;
+    })
+    future<> consume_mutation_fragments_until(StopCondition&& stop, ConsumeMF&& consume_mf, ConsumeEOS&& consume_eos) {
+        assert(_sm);
+        return do_until([this, stop] { return _stop_consumer || stop(); }, [this, stop, consume_mf, consume_eos] {
+            while (!_sm->is_buffer_empty() && !stop()) {
+                consume_mf(_sm->pop_mutation_fragment());
+            }
+            if (stop()) {
+                return make_ready_future<>();
+            }
+            if (_sm->is_end_of_stream()) {
+                _stop_consumer = true;
+                return consume_eos();
+            }
+            return _sm->fill_buffer();
         });
     }
     // Gets the next fragment from the underlying streamed_mutation
