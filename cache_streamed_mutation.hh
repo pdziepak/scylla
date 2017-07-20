@@ -212,8 +212,9 @@ future<> cache_streamed_mutation::do_fill_buffer() {
 
 inline
 future<> cache_streamed_mutation::read_from_underlying() {
-    return do_until([this] { return !_reading_underlying || is_buffer_full(); }, [this] {
-        return _read_context->get_next_fragment().then([this] (auto&& mfopt) {
+    return _read_context->consume_mutation_fragments_until(
+        [this] { return !_reading_underlying || is_buffer_full(); },
+        [this] (mutation_fragment_opt mfopt) {
             if (!mfopt) {
                 _reading_underlying = false;
                 return _lsa_manager.run_in_update_section([this] {
@@ -240,7 +241,6 @@ future<> cache_streamed_mutation::read_from_underlying() {
                 return make_ready_future<>();
             }
         });
-    });
 }
 
 inline
