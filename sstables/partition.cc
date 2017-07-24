@@ -566,6 +566,7 @@ public:
         }
         _is_mutation_end = true;
         _out_of_range = true;
+        push_ready_fragments_out_of_range();
         return proceed::no;
     }
 
