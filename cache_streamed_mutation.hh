@@ -177,13 +177,18 @@ inline
 future<> cache_streamed_mutation::fill_buffer() {
     if (!_static_row_done) {
         _static_row_done = true;
-        return process_static_row().then([this] {
+        auto after_static_row = [this] {
             return _lsa_manager.run_in_read_section([this] {
                 return move_to_current_range();
             }).then([this] {
                 return fill_buffer();
             });
-        });
+        };
+        if (_schema->has_static_columns()) {
+            return process_static_row().then(std::move(after_static_row));
+        } else {
+            return after_static_row();
+        }
     }
     return do_until([this] { return _end_of_stream || is_buffer_full(); }, [this] {
         return do_fill_buffer();
