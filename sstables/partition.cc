@@ -837,7 +837,7 @@ public:
 
     virtual future<> fill_buffer() final override {
         _ds->_consumer.push_ready_fragments();
-        if (is_buffer_full() || is_end_of_stream()) {
+        if (is_buffer_full() || is_end_of_stream() || _ds->_consumer.is_mutation_end()) {
             return make_ready_future<>();
         }
         return _ds->_consumer.maybe_skip().then([this] {
