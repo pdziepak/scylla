@@ -44,6 +44,12 @@ namespace codegen {
 
 static logging::logger logger("codegen");
 
+namespace cgen {
+
+thread_local context* current_context;
+
+}
+
 class module::impl {
     std::unique_ptr<llvm::TargetMachine> _target;
     llvm::DataLayout _data_layout;
