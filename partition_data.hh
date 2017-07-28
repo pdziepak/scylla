@@ -19,8 +19,9 @@
  * along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#pragma once
+
 // something about data representation goes here
-#include "schema.hh"
 #include "in_memory_representation.hh"
 #include "imr/utils.hh"
 
@@ -41,12 +42,12 @@ struct destructor<imr::fixed_size_value<void*>> {
 namespace data {
 
 class type_info {
-    uint16_t _fixed_size = 0;
+    uint32_t _fixed_size = 0;
 public:
     struct fixed_size_tag { };
     struct variable_size_tag { };
 
-    explicit type_info(fixed_size_tag, uint16_t size) noexcept
+    explicit type_info(fixed_size_tag, uint32_t size) noexcept
         : _fixed_size(size) { }
     explicit type_info(variable_size_tag) noexcept { }
 
@@ -65,7 +66,7 @@ public:
     explicit schema_row_info(std::vector<type_info> tis) noexcept
         : _columns(std::move(tis)) { }
 
-    const type_info& type_info_for(column_id id) const noexcept {
+    const type_info& type_info_for(size_t id) const noexcept {
         return _columns[id];
     }
 };
@@ -267,18 +268,18 @@ public:
 };
 
 template<>
-decltype(auto) cell::context::context_for<cell::tags::variable_value>(const uint8_t* ptr) const noexcept {
+inline decltype(auto) cell::context::context_for<cell::tags::variable_value>(const uint8_t* ptr) const noexcept {
     auto length = variable_value::get_first_member(ptr);
     return variable_value_context(length.load());
 }
 
 template<>
-bool cell::context::is_present<cell::tags::exprigng>() const noexcept {
+inline bool cell::context::is_present<cell::tags::exprigng>() const noexcept {
     return _flags.get<tags::exprigng>();
 }
 
 template<>
-auto cell::context::active_alternative_of<cell::tags::value>() const noexcept {
+inline auto cell::context::active_alternative_of<cell::tags::value>() const noexcept {
     if (!_flags.get<tags::live>()) {
         return cell::value_variant::index_for<tags::dead>();
     } else if (_flags.get<tags::counter_update>()) {
@@ -292,7 +293,7 @@ auto cell::context::active_alternative_of<cell::tags::value>() const noexcept {
 }
 
 template<>
-size_t cell::context::size_of<cell::tags::fixed_value>() const noexcept {
+inline size_t cell::context::size_of<cell::tags::fixed_value>() const noexcept {
     return _flags.get<tags::empty>() ? 0 : _type.value_size();
 }
 
@@ -315,7 +316,7 @@ struct do_build_visitor<Function, Functions...> : Function, do_build_visitor<Fun
 };
 
 template<typename... Functions>
-auto build_visitor(Functions&&... fns) {
+inline auto build_visitor(Functions&&... fns) {
     return do_build_visitor<Functions...>(std::forward<Functions>(fns)...);
 }
 
@@ -418,11 +419,11 @@ struct row {
         explicit row_builder(Writer wr) : _writer(wr) { }
 
         template<typename... Args>
-        row_builder& set_live_cell(column_id id, Args&&... args) {
+        row_builder& set_live_cell(size_t id, Args&&... args) {
             _writer.emplace(id, std::forward<Args>(args)...);
             return *this;
         }
-        row_builder& remove_cell(column_id id) noexcept {
+        row_builder& remove_cell(size_t id) noexcept {
             _writer.erase(id);
             return *this;
         }
@@ -452,11 +453,16 @@ struct row {
     }
 
     struct view {
-        context _context;
+        row::context _context;
         structure::view _view;
     public:
         explicit view(const uint8_t* ptr, const schema_row_info& sri)
             : _context(sri), _view(structure::make_view(ptr, _context)) { }
+
+        explicit view(structure::view view, const schema_row_info& sri)
+            : _context(sri), _view(view) { }
+
+        const row::context& context() const noexcept { return _context; }
 
         auto cells() const {
             return _view.get<tags::cells>().elements_range(_context) | boost::adaptors::transformed([this] (auto&& element) {
@@ -475,4 +481,3 @@ struct row {
 
 
 }
-
