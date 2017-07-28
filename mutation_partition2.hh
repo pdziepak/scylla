@@ -121,6 +121,33 @@ public:
         return _view.cells();
     }
 
+    bool empty() const {
+        return _view.empty();
+    }
+
+    bool is_live(const schema& s, tombstone base_tombstone = tombstone(), gc_clock::time_point query_time = gc_clock::time_point::min()) const {
+        for (auto&& id_and_cell : cells()) {
+            auto id = id_and_cell.first;
+            auto& cell = id_and_cell.second;
+
+            const column_definition& def = s.column_at(column_kind::regular_column, id);
+            if (def.is_atomic()) {
+                if (cell.is_live()) { // tomb, now
+                    return true;
+                }
+            } else {
+                /*auto&& cell = cell_or_collection.as_collection_mutation();
+                auto&& ctype = static_pointer_cast<const collection_type_impl>(def.type);
+                if (ctype->is_any_live(cell, tomb, now)) {
+                    any_live = true;
+                    return stop_iteration::yes;
+                }*/
+                abort();
+            }
+        }
+        return false;
+    }
+
     template<typename Serializer, typename Allocator>
     class row_builder {
         const data::schema_row_info& _row_info;
@@ -172,9 +199,6 @@ public:
 
     // Static?
     rows_entry* difference(const schema&, column_kind, const rows_entry& other) const;
-
-    bool empty() const;
-    bool is_live(const schema& s, tombstone base_tombstone = tombstone(), gc_clock::time_point query_time = gc_clock::time_point::min()) const;
 
     bool equal(const schema& s, const rows_entry& other) const;
     bool equal(const schema& s, const rows_entry& other, const schema& other_schema) const;

@@ -472,6 +472,10 @@ struct row {
                 return std::make_pair(id, cell::view(_context.context_for_element(id, view.raw_pointer()), view));
             });
         }
+
+        bool empty() const {
+            return _view.get<tags::cells>().empty();
+        }
     };
 
     static view make_view(const schema_row_info& sri, const uint8_t* ptr) {
