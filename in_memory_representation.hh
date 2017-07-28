@@ -433,7 +433,8 @@ public:
         return *in & size_field_mask;
     }
 
-    static size_t size_when_serialized(T value) noexcept {
+    template<typename... Args>
+    static size_t size_when_serialized(T value, Args&&...) noexcept {
         if (!value) {
             return 1;
         }
@@ -1344,7 +1345,7 @@ public:
                 if (begin_pos == end_pos) {
                     return stdx::nullopt;
                 }
-                return T::make_view(_ptr + begin_pos, _ctx.context_for_element(idx));
+                return T::make_view(_ptr + begin_pos, _ctx.context_for_element(idx, _ptr + begin_pos));
             }
         };
 
