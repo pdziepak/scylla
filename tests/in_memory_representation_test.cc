@@ -886,7 +886,7 @@ BOOST_AUTO_TEST_SUITE(imr_containers);
 
 BOOST_AUTO_TEST_CASE(test_sparse_array) {
     struct dummy_context {
-        int context_for_element(size_t) const { return 42; }
+        int context_for_element(size_t, const uint8_t*) const { return 42; }
     } ctx;
     for (auto i : boost::irange(0, 10)) {
         (void)i;
