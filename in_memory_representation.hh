@@ -1349,6 +1349,14 @@ public:
             }
         };
 
+        size_t size() const {
+            return internal::read_pod<uint16_t>(_ptr);
+        }
+
+        bool empty() const {
+            return !size();
+        }
+
         template<typename Context = decltype(no_context)>
         auto elements_range(const Context& ctx = no_context) {
             return range<Context>(_ptr, ctx);
