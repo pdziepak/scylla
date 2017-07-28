@@ -19,7 +19,6 @@
  * along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define BOOST_TEST_MODULE partition_data
 #include <boost/test/unit_test.hpp>
 
 #include <random>
@@ -31,38 +30,13 @@
 #include <boost/range/algorithm_ext/iota.hpp>
 #include <boost/range/algorithm/sort.hpp>
 
+#include "schema.hh"
 #include "partition_data.hh"
 
-// Don't make me link with the rest of Scylla because of a single symbol.
-standard_allocation_strategy standard_allocation_strategy_instance;
+#include "disk-error-handler.hh"
 
-static
-std::vector<const migrate_fn_type*>&
-static_migrators() {
-    static std::vector<const migrate_fn_type*> obj;
-    return obj;
-}
-
-namespace debug {
-
-std::vector<const migrate_fn_type*>* static_migrators = &::static_migrators();
-
-}
-
-
-uint32_t
-migrate_fn_type::register_migrator(const migrate_fn_type* m) {
-    static_migrators().push_back(m);
-    return static_migrators().size() - 1;
-}
-
-void
-migrate_fn_type::unregister_migrator(uint32_t index) {
-    static_migrators()[index] = nullptr;
-    // reuse freed slots? no need now
-}
-
-
+thread_local disk_error_signal_type commit_error;
+thread_local disk_error_signal_type general_disk_error;
 
 // This shouldn't be here
 thread_local imr::utils::context_factory<data::cell::last_chunk_context> lcc;
@@ -138,7 +112,7 @@ BOOST_AUTO_TEST_CASE(test_live_cell_creation) {
 }
 
 BOOST_AUTO_TEST_CASE(test_row) {
-    std::uniform_int_distribution<size_t> cell_count_dist(0, data::row::max_cell_count);
+    std::uniform_int_distribution<size_t> cell_count_dist(1, data::row::max_cell_count);
     std::uniform_int_distribution<size_t> length_dist(0, data::cell::maximum_internal_storage_length * 2);
 
     for (auto i : boost::irange(0, random_test_iteration_count)) {
@@ -204,8 +178,64 @@ BOOST_AUTO_TEST_CASE(test_row) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_rows_entry) {
+// another test suite
 
+#include "schema_builder.hh"
+#include "mutation_partition2.hh"
+
+BOOST_AUTO_TEST_CASE(test_rows_entry) {
+    auto s = schema_builder("ks", "cf")
+        .with_column("pk", bytes_type, column_kind::partition_key)
+        .with_column("v1", int32_type)
+        .with_column("v2", bytes_type)
+        .with_column("v3", bytes_type)
+        .with_column("v4", int32_type)
+        .with_column("v5", long_type)
+        .with_column("v6", int32_type)
+        .build();
+
+    auto v1 = random_int<int32_t>();
+    auto v3 = random_int<uint8_t>();
+    auto v5 = random_int<int64_t>();
+
+    // owning rows_entry_ptr with a schema?
+    auto ts = api::new_timestamp();
+    auto blob = random_bytes(v3);
+
+    auto re = v2::rows_entry_ptr::make(*s, clustering_key::make_empty(), [&, ts, blob] (auto& builder) {
+        builder.set_cell(0, ts, int32_type->decompose(data_value(v1)));
+        builder.set_cell(2, ts, blob);
+        builder.set_cell(4, ts, long_type->decompose(data_value(v5)));
+    });
+
+    auto cells = re.cells();
+    auto it = cells.begin();
+
+    BOOST_CHECK(it != cells.end());
+    auto i_a_c = *it;
+    BOOST_CHECK_EQUAL(i_a_c.first, 0);
+    BOOST_CHECK(i_a_c.second.is_live());
+    BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+    BOOST_CHECK(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1))));
+
+    ++it;
+    BOOST_CHECK(it != cells.end());
+    i_a_c = *it;
+    BOOST_CHECK_EQUAL(i_a_c.first, 2);
+    BOOST_CHECK(i_a_c.second.is_live());
+    BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+    //BOOST_CHECK_EQUAL(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1))));
+
+    ++it;
+    BOOST_CHECK(it != cells.end());
+    i_a_c = *it;
+    BOOST_CHECK_EQUAL(i_a_c.first, 4);
+    BOOST_CHECK(i_a_c.second.is_live());
+    BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+    BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+
+    ++it;
+    BOOST_CHECK(it == cells.end());
 }
 
 // Test lsa migration for all of them
