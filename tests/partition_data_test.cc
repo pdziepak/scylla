@@ -208,6 +208,9 @@ BOOST_AUTO_TEST_CASE(test_rows_entry) {
         builder.set_cell(4, ts, long_type->decompose(data_value(v5)));
     });
 
+    BOOST_CHECK(!re.empty());
+    BOOST_CHECK(re.is_live(*s));
+
     auto cells = re.cells();
     auto it = cells.begin();
 
