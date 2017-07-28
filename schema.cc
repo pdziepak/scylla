@@ -34,6 +34,7 @@
 #include <boost/range/algorithm.hpp>
 #include <boost/algorithm/cxx11/any_of.hpp>
 #include "view_info.hh"
+#include "mutation_partition2.hh"
 
 constexpr int32_t schema::NAME_LENGTH;
 
@@ -336,6 +337,26 @@ schema::schema(const raw_schema& raw, stdx::optional<raw_view_info> raw_view_inf
     if (raw_view_info) {
         _view_info = std::make_unique<::view_info>(*this, *raw_view_info);
     }
+
+    _imr_data = make_lw_shared<imr_data>({
+        generate_row_imr_info(regular_columns()),
+        generate_row_imr_info(static_columns()),
+    });
+    _imr_data->lsa_regular_row_migrator
+        = std::make_unique<v2::rows_entry::lsa_migrator<data::row::context>>(data::row::context(_imr_data->regular_row_info));
+}
+
+template<typename ColumnRange>
+data::schema_row_info schema::generate_row_imr_info(ColumnRange&& columns) {
+    return data::schema_row_info(boost::copy_range<std::vector<data::type_info>>(
+        std::forward<ColumnRange>(columns) | boost::adaptors::transformed([] (const column_definition& column) {
+            if (column.type->is_fixed_size()) {
+                return data::type_info(data::type_info::fixed_size_tag(), column.type->object_size());
+            } else {
+                return data::type_info(data::type_info::variable_size_tag());
+            }
+        })
+    ));
 }
 
 schema::schema(std::experimental::optional<utils::UUID> id,
@@ -376,6 +397,7 @@ schema::schema(std::experimental::optional<utils::UUID> id,
 schema::schema(const schema& o)
     : _raw(o._raw)
     , _offsets(o._offsets)
+    , _imr_data(o._imr_data)
 {
     rebuild();
     if (o.is_view()) {
