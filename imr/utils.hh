@@ -72,85 +72,6 @@ struct default_lsa_migrate_fn {
 template<typename Structure>
 lsa_migrate_fn<Structure, decltype(no_context_factory)> default_lsa_migrate_fn<Structure>::migrate_fn(no_context_factory);
 
-
-// LSA-aware helper for creating hybrids of C++ and IMR objects. Particularly
-// useful in the intermediate before we are fully converted to IMR so that we
-// can easily have e.g. IMR objects with boost::intrusive containers hooks.
-template<typename Header, typename Structure>
-GCC6_CONCEPT(requires std::is_nothrow_move_constructible<Header>::value
-                   && std::is_nothrow_destructible<Header>::value)
-class object_with_header final : public Header {
-    using Header::Header;
-    ~object_with_header() = default;
-    object_with_header(object_with_header&&) = default;
-private:
-    const uint8_t* imr_data() const noexcept {
-        return reinterpret_cast<const uint8_t*>(this + 1);
-    }
-    uint8_t* imr_data() noexcept {
-        return reinterpret_cast<uint8_t*>(this + 1);
-    }
-public:
-    object_with_header(const object_with_header&) = delete;
-    object_with_header& operator=(const object_with_header&) = delete;
-    object_with_header& operator=(object_with_header&&) = delete;
-
-    template<typename Context = decltype(no_context)>
-    typename Structure::view imr_object(const Context& context = no_context) const noexcept {
-        return Structure::make_view(imr_data(), context);
-    }
-
-    template<typename Context = decltype(no_context)>
-    typename Structure::mutable_view imr_object(const Context& context = no_context) const noexcept {
-        return Structure::make_view(imr_data(), context);
-    }
-public:
-    template<typename Context>
-    class lsa_migrator final : migrate_fn_type {
-        const Context& _context;
-    public:
-        explicit lsa_migrator(const Context& context)
-            : migrate_fn_type(alignof(Header)), _context(context) { }
-
-        lsa_migrator(lsa_migrator&&) = delete;
-        lsa_migrator(const lsa_migrator&) = delete;
-
-        lsa_migrator& operator=(lsa_migrator&&) = delete;
-        lsa_migrator& operator=(const lsa_migrator&) = delete;
-
-        virtual void migrate(void* src_ptr, void* dst_ptr, size_t size) const noexcept override {
-            auto src = static_cast<object_with_header*>(src_ptr);
-            auto dst = new (dst_ptr) object_with_header(std::move(*src));
-            std::copy_n(src->imr_data(), size - sizeof(object_with_header), dst->imr_data());
-            methods::move<Structure>(dst->imr_data(), _context);
-        }
-
-        virtual size_t size(const void* obj_ptr) const noexcept override {
-            auto obj = static_cast<object_with_header*>(obj_ptr);
-            return sizeof(object_with_header) + Structure::serialized_object_size(obj->imr_data(), _context);
-        }
-    };
-private:
-    static lsa_migrator<decltype(no_context_factory)> _lsa_migrator;
-public:
-    template<typename HeaderArg, typename ObjectArg>
-    GCC6_CONCEPT(requires std::is_nothrow_constructible<Header, HeaderArg>::value)
-    static object_with_header* create(HeaderArg&& hdr, ObjectArg&& obj,
-                                      allocation_strategy::migrate_fn* migrate = &_lsa_migrator) {
-        auto obj_size = Structure::size_when_serialized(obj);
-        auto ptr = current_allocator().alloc(migrate, sizeof(Header) + obj_size, alignof(Header));
-        auto owh = new (ptr) object_with_header(std::forward<HeaderArg>(hdr));
-        Structure::serialize(owh->imr_data(), std::forward<ObjectArg>(obj));
-        return owh;
-    }
-
-    template<typename Context = decltype(no_context)>
-    static void destroy(object_with_header* object, const Context& context = no_context) noexcept {
-        methods::destroy<Structure>(object->imr_data(), context);
-        current_allocator().destroy(object);
-    }
-};
-
 class external_object_allocator {
     union allocation {
     private:
@@ -158,7 +79,7 @@ class external_object_allocator {
         std::pair<size_t, allocation_strategy::migrate_fn> _request; // ensure that pair is a trivially destructible
     public:
         explicit allocation(size_t n, allocation_strategy::migrate_fn fn) noexcept
-            : _request(std::make_pair(n, fn)) { }
+                : _request(std::make_pair(n, fn)) { }
 
         void allocate() {
             auto ptr = current_allocator().alloc(_request.second, _request.first, 1);
@@ -207,7 +128,7 @@ public:
         external_object_allocator& _parent;
     public:
         explicit sizer(external_object_allocator& parent) noexcept
-            : _parent(parent) { }
+                : _parent(parent) { }
 
         template<typename T, typename... Args>
         uint8_t* allocate(Args&& ... args) {
@@ -246,6 +167,97 @@ public:
     sizer get_sizer() noexcept { return sizer(*this); }
     serializer get_serializer() noexcept { return serializer(*this); }
 };
+
+
+// LSA-aware helper for creating hybrids of C++ and IMR objects. Particularly
+// useful in the intermediate before we are fully converted to IMR so that we
+// can easily have e.g. IMR objects with boost::intrusive containers hooks.
+template<typename Header, typename Structure>
+GCC6_CONCEPT(requires std::is_nothrow_move_constructible<Header>::value
+                   && std::is_nothrow_destructible<Header>::value)
+class object_with_header final : public Header {
+    using Header::Header;
+    template<typename... Args>
+    object_with_header(Args&&... args) : Header(std::forward<Args>(args)...) { }
+    ~object_with_header() = default;
+    object_with_header(object_with_header&&) = default;
+private:
+    const uint8_t* imr_data() const noexcept {
+        return reinterpret_cast<const uint8_t*>(this + 1);
+    }
+    uint8_t* imr_data() noexcept {
+        return reinterpret_cast<uint8_t*>(this + 1);
+    }
+public:
+    object_with_header(const object_with_header&) = delete;
+    object_with_header& operator=(const object_with_header&) = delete;
+    object_with_header& operator=(object_with_header&&) = delete;
+
+    template<typename Context = decltype(no_context)>
+    typename Structure::view imr_object(const Context& context = no_context) const noexcept {
+        return Structure::make_view(imr_data(), context);
+    }
+
+    template<typename Context = decltype(no_context)>
+    typename Structure::mutable_view imr_object(const Context& context = no_context) noexcept {
+        return Structure::make_view(imr_data(), context);
+    }
+public:
+    template<typename Context>
+    class lsa_migrator final : public migrate_fn_type {
+        const Context& _context;
+    public:
+        explicit lsa_migrator(const Context& context)
+            : migrate_fn_type(alignof(Header)), _context(context) { }
+
+        lsa_migrator(lsa_migrator&&) = delete;
+        lsa_migrator(const lsa_migrator&) = delete;
+
+        lsa_migrator& operator=(lsa_migrator&&) = delete;
+        lsa_migrator& operator=(const lsa_migrator&) = delete;
+
+        virtual void migrate(void* src_ptr, void* dst_ptr, size_t size) const noexcept override {
+            auto src = static_cast<object_with_header*>(src_ptr);
+            auto dst = new (dst_ptr) object_with_header(std::move(*src));
+            std::copy_n(src->imr_data(), size - sizeof(object_with_header), dst->imr_data());
+            methods::move<Structure>(dst->imr_data(), _context);
+        }
+
+        virtual size_t size(const void* obj_ptr) const noexcept override {
+            auto obj = static_cast<const object_with_header*>(obj_ptr);
+            return sizeof(object_with_header) + Structure::serialized_object_size(obj->imr_data(), _context);
+        }
+    };
+private:
+    static lsa_migrator<decltype(no_context_factory)> _lsa_migrator;
+public:
+    template<typename HeaderArg, typename ObjectArg>
+    GCC6_CONCEPT(requires std::is_nothrow_constructible<Header, HeaderArg>::value)
+    static object_with_header* create(HeaderArg&& hdr, ObjectArg&& obj,
+                                      allocation_strategy::migrate_fn migrate = &_lsa_migrator) {
+        external_object_allocator allocator;
+        auto obj_size = Structure::size_when_serialized(obj, allocator.get_sizer());
+        auto ptr = current_allocator().alloc(migrate, sizeof(Header) + obj_size, alignof(Header));
+        try {
+            // RAII to protect ptr
+            allocator.allocate_all();
+        } catch (...) {
+            current_allocator().free(ptr, sizeof(Header) + obj_size);
+            throw;
+        }
+        auto owh = new (ptr) object_with_header(std::forward<HeaderArg>(hdr));
+        Structure::serialize(owh->imr_data(), std::forward<ObjectArg>(obj), allocator.get_serializer());
+        return owh;
+    }
+
+    template<typename Context = decltype(no_context)>
+    static void destroy(object_with_header* object, const Context& context = no_context) noexcept {
+        methods::destroy<Structure>(object->imr_data(), context);
+        object->~object_with_header();
+        current_allocator().free(object, 0); // FIXME: use correct size (unless it is not needed)
+    }
+};
+
 
 }
 }
