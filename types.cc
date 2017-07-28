@@ -83,6 +83,8 @@ static const char* empty_type_name     = "org.apache.cassandra.db.marshal.EmptyT
 
 template<typename T>
 struct simple_type_traits {
+    static constexpr size_t serialized_size = sizeof(T);
+
     static T read_nonempty(bytes_view v) {
         return read_simple_exactly<T>(v);
     }
@@ -90,6 +92,8 @@ struct simple_type_traits {
 
 template<>
 struct simple_type_traits<bool> {
+    static constexpr size_t serialized_size = 1;
+
     static bool read_nonempty(bytes_view v) {
         return read_simple_exactly<int8_t>(v) != 0;
     }
@@ -97,6 +101,8 @@ struct simple_type_traits<bool> {
 
 template<>
 struct simple_type_traits<db_clock::time_point> {
+    static constexpr size_t serialized_size = sizeof(uint64_t);
+
     static db_clock::time_point read_nonempty(bytes_view v) {
         return db_clock::time_point(db_clock::duration(read_simple_exactly<int64_t>(v)));
     }
@@ -124,6 +130,12 @@ struct simple_type_impl : concrete_type<T> {
     }
     virtual size_t hash(bytes_view v) const override {
         return std::hash<bytes_view>()(v);
+    }
+    virtual bool is_fixed_size() const override {
+        return true;
+    }
+    virtual size_t object_size() const override {
+        return simple_type_traits<T>::serialized_size;
     }
     virtual bool references_user_type(const sstring& keyspace, const bytes& name) const {
         return false;
@@ -480,6 +492,12 @@ public:
     virtual bool is_byte_order_comparable() const override {
         return true;
     }
+    virtual bool is_fixed_size() const override {
+        return true;
+    }
+    virtual size_t object_size() const override {
+        return sizeof(uint64_t);
+    }
     virtual size_t hash(bytes_view v) const override {
         return std::hash<bytes_view>()(v);
     }
@@ -560,6 +578,12 @@ struct timeuuid_type_impl : public concrete_type<utils::UUID> {
     }
     virtual bool is_byte_order_equal() const override {
         return true;
+    }
+    virtual bool is_fixed_size() const override {
+        return true;
+    }
+    virtual size_t object_size() const override {
+        return sizeof(uint64_t) * 2;
     }
     virtual size_t hash(bytes_view v) const override {
         return std::hash<bytes_view>()(v);
@@ -1053,6 +1077,12 @@ struct uuid_type_impl : concrete_type<utils::UUID> {
     virtual bool is_value_compatible_with_internal(const abstract_type& other) const override {
         return &other == this || &other == timeuuid_type.get();
     }
+    virtual bool is_fixed_size() const override {
+        return true;
+    }
+    virtual size_t object_size() const override {
+        return sizeof(uint64_t) * 2;
+    }
 };
 
 struct inet_addr_type_impl : concrete_type<net::ipv4_address> {
@@ -1151,6 +1181,8 @@ template <> struct int_of_size<float> :
 
 template <typename T>
 struct float_type_traits {
+    static constexpr size_t serialized_size = sizeof(typename int_of_size<T>::itype);
+
     static double read_nonempty(bytes_view v) {
         union {
             T d;

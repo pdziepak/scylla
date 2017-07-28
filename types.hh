@@ -510,6 +510,16 @@ public:
         return false;
     }
 
+    // Returns true iff all non-empty objects of this type have the same size.
+    virtual bool is_fixed_size() const {
+        return false;
+    }
+    // Returns the size of non-empty object of this type. Valid only if
+    // is_fixed_size() returns true.
+    virtual size_t object_size() const {
+        return 0;
+    }
+
     /**
      * When returns true then equal values have the same byte representation and if byte
      * representation is different, the values are not equal.
