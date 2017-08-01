@@ -433,12 +433,12 @@ struct row {
     };
 
     class context {
-        const schema_row_info& _sri;
+        const schema_row_info* _sri;
     public:
-        explicit context(const schema_row_info& sri) : _sri(sri) { }
+        explicit context(const schema_row_info& sri) : _sri(&sri) { }
 
         auto context_for_element(size_t id, const uint8_t* ptr) const noexcept {
-            return cell::context(cell::structure::get_first_member(ptr), _sri.type_info_for(id));
+            return cell::context(cell::structure::get_first_member(ptr), _sri->type_info_for(id));
         }
 
         template<typename Tag>
@@ -457,10 +457,17 @@ struct row {
         structure::view _view;
     public:
         explicit view(const uint8_t* ptr, const schema_row_info& sri)
-            : _context(sri), _view(structure::make_view(ptr, _context)) { }
+            : view(ptr, row::context(sri)) { }
+
+        explicit view(const uint8_t* ptr, const row::context& ctx)
+            : _context(ctx), _view(structure::make_view(ptr, _context)) { }
 
         explicit view(structure::view view, const schema_row_info& sri)
             : _context(sri), _view(view) { }
+
+        explicit view(structure::view view, const row::context& ctx)
+            : _context(ctx), _view(view) { }
+
 
         const row::context& context() const noexcept { return _context; }
 
