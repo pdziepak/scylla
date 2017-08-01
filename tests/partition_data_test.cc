@@ -207,38 +207,138 @@ BOOST_AUTO_TEST_CASE(test_rows_entry) {
         builder.set_cell(2, ts, blob);
         builder.set_cell(4, ts, long_type->decompose(data_value(v5)));
     });
+    BOOST_CHECK(re.equal(re));
 
     BOOST_CHECK(!re.empty());
     BOOST_CHECK(re.is_live(*s));
 
-    auto cells = re.cells();
-    auto it = cells.begin();
+    {
+        auto cells = re.cells();
+        auto it = cells.begin();
 
-    BOOST_CHECK(it != cells.end());
-    auto i_a_c = *it;
-    BOOST_CHECK_EQUAL(i_a_c.first, 0);
-    BOOST_CHECK(i_a_c.second.is_live());
-    BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-    BOOST_CHECK(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1))));
+        BOOST_CHECK(it != cells.end());
+        auto i_a_c = *it;
+        BOOST_CHECK_EQUAL(i_a_c.first, 0);
+        BOOST_CHECK(i_a_c.second.is_live());
+        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+        BOOST_CHECK(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1))));
 
-    ++it;
-    BOOST_CHECK(it != cells.end());
-    i_a_c = *it;
-    BOOST_CHECK_EQUAL(i_a_c.first, 2);
-    BOOST_CHECK(i_a_c.second.is_live());
-    BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-    //BOOST_CHECK_EQUAL(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1))));
+        ++it;
+        BOOST_CHECK(it != cells.end());
+        i_a_c = *it;
+        BOOST_CHECK_EQUAL(i_a_c.first, 2);
+        BOOST_CHECK(i_a_c.second.is_live());
+        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+        //BOOST_CHECK_EQUAL(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1))));
 
-    ++it;
-    BOOST_CHECK(it != cells.end());
-    i_a_c = *it;
-    BOOST_CHECK_EQUAL(i_a_c.first, 4);
-    BOOST_CHECK(i_a_c.second.is_live());
-    BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-    BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+        ++it;
+        BOOST_CHECK(it != cells.end());
+        i_a_c = *it;
+        BOOST_CHECK_EQUAL(i_a_c.first, 4);
+        BOOST_CHECK(i_a_c.second.is_live());
+        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+        BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
 
-    ++it;
-    BOOST_CHECK(it == cells.end());
+        ++it;
+        BOOST_CHECK(it == cells.end());
+    }
+
+    auto v1b = random_int<int32_t>();
+    auto v5b = random_int<int64_t>();
+    auto v6 = random_int<int32_t>();
+    auto ts2 = api::new_timestamp();
+    auto re2 = v2::rows_entry_ptr::make(*s, clustering_key::make_empty(), [&] (auto& builder) {
+        builder.set_cell(0, ts2, int32_type->decompose(data_value(v1b)));
+        builder.set_cell(4, ts - 100, int32_type->decompose(data_value(v5b)));
+        builder.set_cell(5, ts2, int32_type->decompose(data_value(v6)));
+    });
+    auto re2b = re2.copy(*s);
+    BOOST_CHECK(!re.equal(re2));
+
+    auto re3 = re.copy(*s);
+    BOOST_CHECK(re.equal(re3));
+
+    re.apply(*s, re2);
+    BOOST_CHECK(!re.equal(re3));
+    auto re4 = re.copy(*s);
+    BOOST_CHECK(re.equal(re4));
+
+    BOOST_CHECK(!re.empty());
+    BOOST_CHECK(re.is_live(*s));
+
+    {
+        auto cells = re.cells();
+        auto it = cells.begin();
+
+        BOOST_CHECK(it != cells.end());
+        auto i_a_c = *it;
+        BOOST_CHECK_EQUAL(i_a_c.first, 0);
+        BOOST_CHECK(i_a_c.second.is_live());
+        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts2);
+        BOOST_CHECK(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1b))));
+
+        ++it;
+        BOOST_CHECK(it != cells.end());
+        i_a_c = *it;
+        BOOST_CHECK_EQUAL(i_a_c.first, 2);
+        BOOST_CHECK(i_a_c.second.is_live());
+        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+        //BOOST_CHECK_EQUAL(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1))));
+
+        ++it;
+        BOOST_CHECK(it != cells.end());
+        i_a_c = *it;
+        BOOST_CHECK_EQUAL(i_a_c.first, 4);
+        BOOST_CHECK(i_a_c.second.is_live());
+        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+        BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+
+        ++it;
+        BOOST_CHECK(it != cells.end());
+        i_a_c = *it;
+        BOOST_CHECK_EQUAL(i_a_c.first, 5);
+        BOOST_CHECK(i_a_c.second.is_live());
+        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts2);
+        BOOST_CHECK(long_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v6))));
+
+        ++it;
+        BOOST_CHECK(it == cells.end());
+    }
+
+    re.revert(re2);
+    BOOST_CHECK(re.equal(re3));
+    BOOST_CHECK(!re.equal(re4));
+
+    re.apply(*s, re2);
+    BOOST_CHECK(re.equal(re4));
+
+    auto diff = re.difference(*s, re4);
+    BOOST_CHECK(!diff);
+
+    diff = re.difference(*s, re2b);
+    BOOST_CHECK(diff);
+    {
+        auto cells = diff->cells();
+        auto it = cells.begin();
+
+        BOOST_CHECK(it != cells.end());
+        auto i_a_c = *it;
+        BOOST_CHECK_EQUAL(i_a_c.first, 2);
+        BOOST_CHECK(i_a_c.second.is_live());
+        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+        //BOOST_CHECK_EQUAL(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1))));
+
+        ++it;
+        BOOST_CHECK(it != cells.end());
+        i_a_c = *it;
+        BOOST_CHECK_EQUAL(i_a_c.first, 4);
+        BOOST_CHECK(i_a_c.second.is_live());
+        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+        BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+
+        ++it;
+        BOOST_CHECK(it == cells.end());
+    }
 }
 
 // Test lsa migration for all of them
