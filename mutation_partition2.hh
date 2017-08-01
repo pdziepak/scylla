@@ -4,6 +4,7 @@
 #pragma once
 
 #include "mutation_partition.hh"
+#include "combine.hh"
 
 namespace v2 {
 
@@ -93,9 +94,13 @@ class rows_entry_ptr {
     rows_entry* _entry;
     data::row::view _view;
 public:
+    rows_entry_ptr(const data::row::context& ctx, rows_entry* re) noexcept
+            : _entry(re)
+            , _view(re->imr_object(ctx), ctx)
+    { }
+
     rows_entry_ptr(const data::schema_row_info& sri, rows_entry* re) noexcept
-        : _entry(re)
-        , _view(re->imr_object(data::row::context(sri)), sri)
+        : rows_entry_ptr(data::row::context(sri), re)
     { }
 
     rows_entry_ptr(const rows_entry_ptr&) = delete;
@@ -157,6 +162,9 @@ public:
         row_builder(const data::schema_row_info& sri, Serializer ser, Allocator alloc) noexcept
             : _row_info(sri), _serializer(std::move(ser)), _allocator(std::move(alloc)) { }
 
+        row_builder(const row_builder&) = delete;
+        row_builder(row_builder&&) = delete;
+
         row_builder& set_cell(column_id id, api::timestamp_type ts, bytes_view data) {
             _serializer.set_live_cell(id, data::cell::make_live(_row_info.type_info_for(id), ts, data), _allocator);
             return *this;
@@ -180,16 +188,98 @@ public:
                                   }).done();
                               }, s.lsa_regular_row_migrator()));
     }
+
+    void apply(const schema& s, rows_entry_ptr& other) {
+        auto re = rows_entry::create(rows_entry_header(_entry->key()), [&] (auto serializer, auto allocator) {
+            return serializer.serialize([&] (auto array_serializer) {
+                data::row::row_builder<decltype(array_serializer)> rb(array_serializer);
+                combine2(cells(), other.cells(), make_visitor(
+                    [&] (auto&& id_a_c) {
+                        data::cell::view& cell = id_a_c.second;
+                        // TODO: this is not reasonable at all
+                        rb.set_live_cell(id_a_c.first, data::cell::make_live(s.regular_row_imr_info().type_info_for(id_a_c.first), cell.timestamp(), cell.value()), allocator);
+                    },
+                    [&] (auto&& a, auto&& b) {
+                        auto cell = &a.second;
+                        // TODO: this is not correct
+                        if (a.second.timestamp() < b.second.timestamp()) {
+                            cell = &b.second;
+                        }
+                        rb.set_live_cell(a.first, data::cell::make_live(s.regular_row_imr_info().type_info_for(a.first), cell->timestamp(), cell->value()), allocator);
+                    }
+                ), [] (auto& x, auto& y) { return x.first < y.first; });
+                return rb.done();
+            }).done();
+        }, s.lsa_regular_row_migrator());
+        // Rehook rows_entry_header in the tree.
+        rows_entry::destroy(other._entry, other._view.context());
+        other._entry = std::exchange(_entry, re);
+        other._view = std::exchange(_view, data::row::view(_entry->imr_object(_view.context()), _view.context()));
+    }
+
+    rows_entry_ptr copy(const schema& s) {
+        return rows_entry_ptr(_view.context(),
+                              rows_entry::create(rows_entry_header(_entry->key()), [&] (auto serializer, auto allocator) {
+                                  return serializer.serialize([&] (auto array_serializer) {
+                                      data::row::row_builder<decltype(array_serializer)> rb(array_serializer);
+                                      for (auto&& id_a_c : cells()) {
+                                          data::cell::view& cell = id_a_c.second;
+                                          // TODO: this is not reasonable at all
+                                          rb.set_live_cell(id_a_c.first, data::cell::make_live(s.regular_row_imr_info().type_info_for(id_a_c.first), cell.timestamp(), cell.value()), allocator);
+                                      }
+                                      return rb.done();
+                                  }).done();
+                              }, s.lsa_regular_row_migrator()));
+    }
+
+    stdx::optional<rows_entry_ptr> difference(const schema& s, const rows_entry_ptr& other) {
+        std::array<stdx::optional<data::cell::view>, data::row::max_cell_count> diff_cells;
+        size_t cell_count = 0;
+        combine3(cells(), other.cells(), make_visitor(
+            [&] (auto&& id_a_c, none_t) { diff_cells[id_a_c.first] = id_a_c.second; cell_count = id_a_c.first + 1; },
+            [] (none_t, auto&& id_a_c) { },
+            [&] (auto&& a, auto&& b) {
+                // TODO: this is not correct
+                if (a.second.timestamp() > b.second.timestamp()) {
+                    diff_cells[a.first] = a.second; cell_count = a.first + 1;
+                }
+            }), [] (auto& x, auto& y) { return x.first < y.first; });
+        if (!cell_count) {
+            return {};
+        }
+        return rows_entry_ptr(_view.context(),
+                              rows_entry::create(rows_entry_header(_entry->key()), [&] (auto serializer, auto allocator) {
+                                  return serializer.serialize([&] (auto array_serializer) {
+                                      data::row::row_builder<decltype(array_serializer)> rb(array_serializer);
+                                      for (auto i = 0u; i < cell_count; i++) {
+                                          if (!diff_cells[i]) {
+                                              continue;
+                                          }
+                                          data::cell::view& cell = *diff_cells[i];
+                                          // TODO: this is not reasonable at all
+                                          rb.set_live_cell(i, data::cell::make_live(s.regular_row_imr_info().type_info_for(i), cell.timestamp(), cell.value()), allocator);
+                                      }
+                                      return rb.done();
+                                  }).done();
+                              }, s.lsa_regular_row_migrator()));
+    }
+
+    bool equal(const rows_entry_ptr& other) const noexcept {
+        // TODO: use IMR generated comparator so that we could optimise it
+        // to memcmp over whole row in best case?
+        return boost::equal(cells(), other.cells(), [] (auto&& x, auto&& y) {
+            return x.first == y.first
+                && x.second.timestamp() == y.second.timestamp()
+                && x.second.value() == y.second.value();
+                // FIXME: incomplete
+        });
+    }
+
+    void revert(rows_entry_ptr& other) noexcept {
+        std::swap(_entry, other._entry);
+        std::swap(_view, other._view);
+    }
 };
-    // These have to be static:
-    // See reversibly_mergeable.hh
-    //void apply_reversibly(const schema& s, rows_entry& e) {
-    //    _row.apply_reversibly(s, e._row);
-    //}
-    // See reversibly_mergeable.hh
-    //void revert(const schema& s, rows_entry& e) noexcept {
-    //    _row.revert(s, e._row);
-    //}
 /*
     // TODO: pass allocator as an argument to avoid accessing thread_local variable
     template<typename Writer>
@@ -197,10 +287,6 @@ public:
         rows_entry::create_derived<rows_entry>
     }
 
-    // Static?
-    rows_entry* difference(const schema&, column_kind, const rows_entry& other) const;
-
-    bool equal(const schema& s, const rows_entry& other) const;
     bool equal(const schema& s, const rows_entry& other, const schema& other_schema) const;
 
     friend std::ostream& operator<<(std::ostream& os, const rows_entry& re);
