@@ -30,10 +30,24 @@ static struct {
     static auto create(const void*) { return no_context; }
 } no_context_factory;
 
-template<typename Context>
-struct context_factory {
-    static Context create(const uint8_t* obj) {
-        return Context(obj);
+template<typename Context, typename... State>
+class context_factory {
+    std::tuple<State...> _state;
+private:
+    template<size_t... Index>
+    Context create(const uint8_t* obj, std::index_sequence<Index...>) const {
+        return Context(obj, std::get<Index>(_state)...);
+    }
+public:
+    template<typename... Args>
+    context_factory(Args&&... args) : _state(std::forward<Args>(args)...) { }
+
+    context_factory(context_factory&) = default;
+    context_factory(const context_factory&) = default;
+    context_factory(context_factory&&) = default;
+
+    Context create(const uint8_t* obj) const {
+        return create(obj, std::index_sequence_for<State...>());
     }
 };
 
@@ -203,12 +217,12 @@ public:
         return Structure::make_view(imr_data(), context);
     }
 public:
-    template<typename Context>
+    template<typename ContextFactory>
     class lsa_migrator final : public migrate_fn_type {
-        const Context& _context;
+        ContextFactory _context_factory;
     public:
-        explicit lsa_migrator(const Context& context)
-            : migrate_fn_type(alignof(Header)), _context(context) { }
+        explicit lsa_migrator(ContextFactory context_factory)
+            : migrate_fn_type(alignof(Header)), _context_factory(std::move(context_factory)) { }
 
         lsa_migrator(lsa_migrator&&) = delete;
         lsa_migrator(const lsa_migrator&) = delete;
@@ -220,12 +234,13 @@ public:
             auto src = static_cast<object_with_header*>(src_ptr);
             auto dst = new (dst_ptr) object_with_header(std::move(*src));
             std::copy_n(src->imr_data(), size - sizeof(object_with_header), dst->imr_data());
-            methods::move<Structure>(dst->imr_data(), _context);
+            methods::move<Structure>(dst->imr_data(), _context_factory.create(dst->imr_data()));
         }
 
         virtual size_t size(const void* obj_ptr) const noexcept override {
             auto obj = static_cast<const object_with_header*>(obj_ptr);
-            return sizeof(object_with_header) + Structure::serialized_object_size(obj->imr_data(), _context);
+            return sizeof(object_with_header) + Structure::serialized_object_size(obj->imr_data(),
+                                                                                  _context_factory.create(obj->imr_data()));
         }
     };
 private:
@@ -253,8 +268,10 @@ public:
     template<typename Context = decltype(no_context)>
     static void destroy(object_with_header* object, const Context& context = no_context) noexcept {
         methods::destroy<Structure>(object->imr_data(), context);
+        // FIXME: don't do this if not needed (ask allocation strategy)
+        auto size = Structure::serialized_object_size(object->imr_data(), context);
         object->~object_with_header();
-        current_allocator().free(object, 0); // FIXME: use correct size (unless it is not needed)
+        current_allocator().free(object, sizeof(Header) + size);
     }
 };
 
