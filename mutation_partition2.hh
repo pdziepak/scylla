@@ -9,7 +9,9 @@
 namespace v2 {
 
 class rows_entry_header {
+public:
     intrusive_set_external_comparator_member_hook _link;
+private:
     clustering_key _key;
 
     // TODO: move tombstone and row_marker to IMR (ck is going to be more
@@ -103,6 +105,10 @@ public:
         : rows_entry_ptr(data::row::context(sri), re)
     { }
 
+    rows_entry_ptr(const schema& s, rows_entry& re) noexcept
+        : rows_entry_ptr(s.regular_row_imr_info(), &re)
+    { }
+
     rows_entry_ptr(const rows_entry_ptr&) = delete;
     rows_entry_ptr(rows_entry_ptr&& other) noexcept
         : _entry(std::exchange(other._entry, nullptr))
@@ -120,6 +126,10 @@ public:
         if (_entry) {
             rows_entry::destroy(_entry, _view.context());
         }
+    }
+
+    rows_entry* release() noexcept {
+        return std::exchange(_entry, nullptr);
     }
 
     auto cells() const {
