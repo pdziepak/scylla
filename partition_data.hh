@@ -25,20 +25,6 @@
 #include "in_memory_representation.hh"
 #include "imr/utils.hh"
 
-namespace imr {
-namespace methods {
-
-template<>
-struct destructor<imr::fixed_size_value<void*>> {
-    static void run(const uint8_t* ptr, ...) {
-        auto view = imr::fixed_size_value<void*>::make_view(ptr);
-        ::free(view.load());
-    }
-};
-
-}
-}
-
 namespace data {
 
 class type_info {
@@ -107,7 +93,7 @@ struct cell {
         tags::empty
     >;
     using value_data_variant = imr::variant<tags::value_data,
-        imr::member<tags::pointer, imr::fixed_size_value<void*>>,
+        imr::member<tags::pointer, imr::tagged_type<tags::pointer, imr::fixed_size_value<void*>>>,
         imr::member<tags::data, imr::fixed_buffer<tags::data>>
     >;
     using variable_value = imr::structure<
@@ -133,8 +119,8 @@ struct cell {
 
     using external_last_chunk_size = imr::fixed_size_value<uint16_t>;
     using external_last_chunk = imr::structure<
+        imr::member<tags::chunk_back_pointer, imr::tagged_type<tags::chunk_back_pointer, imr::fixed_size_value<void*>>>,
         imr::member<tags::last_chunk_size, external_last_chunk_size>,
-        imr::member<tags::chunk_back_pointer, imr::fixed_size_value<void*>>,
         imr::member<tags::chunk_data, imr::fixed_buffer<tags::chunk_data>>
     >;
 
@@ -163,17 +149,18 @@ struct cell {
                             if (value.size() <= maximum_internal_storage_length) {
                                 return ser.template serialize_as<tags::data>(value);
                             } else {
+                                auto pointer = ser.position();
                                 return ser.template serialize_as<tags::pointer>(
-                                    allocations.template allocate2<external_last_chunk>(&lsa_last_chunk_migrate_fn, [&serializer, value] (auto chunk_serializer) noexcept {
+                                    allocations.template allocate2<external_last_chunk>(&lsa_last_chunk_migrate_fn, [&serializer, value] (auto chunk_serializer, auto back_ptr) noexcept {
                                         // FIXME
                                         assert(value.size() < std::numeric_limits<uint16_t>::max());
                                         // FIXME: try to avoid recursion once support for fragmentation is added
                                         return chunk_serializer
+                                                .serialize(back_ptr)
                                                 .serialize(value.size())
-                                                .serialize(nullptr) //serializer.base_pointer()
                                                 .serialize(value)
                                                 .done();
-                                    })
+                                    }, pointer)
                                 );
                             }
                         }().done();
@@ -202,7 +189,7 @@ class cell::last_chunk_context {
     external_last_chunk_size::view _size;
 public:
     explicit last_chunk_context(const uint8_t* ptr) noexcept
-        : _size(external_last_chunk::get_first_member(ptr))
+        : _size(external_last_chunk::get_member<1>(ptr))
     { }
 
     template<typename Tag>
@@ -436,6 +423,7 @@ struct row {
         const schema_row_info* _sri;
     public:
         explicit context(const schema_row_info& sri) : _sri(&sri) { }
+        context(const uint8_t*, const schema_row_info& sri) noexcept : _sri(&sri) { }
 
         auto context_for_element(size_t id, const uint8_t* ptr) const noexcept {
             return cell::context(cell::structure::get_first_member(ptr), _sri->type_info_for(id));
@@ -490,5 +478,41 @@ struct row {
     }
 };
 
+}
 
+namespace imr {
+namespace methods {
+
+template<>
+struct destructor<imr::tagged_type<data::cell::tags::pointer, imr::fixed_size_value<void*>>> {
+static void run(const uint8_t* ptr, ...) {
+    auto ptr_view = imr::fixed_size_value<void*>::make_view(ptr);
+    auto chk = static_cast<const uint8_t*>(ptr_view.load());
+    auto len = data::cell::external_last_chunk::serialized_object_size(chk, data::cell::last_chunk_context(chk));
+    current_allocator().free(ptr_view.load(), len);
+}
+};
+
+template<>
+struct mover<imr::tagged_type<data::cell::tags::pointer, imr::fixed_size_value<void*>>> {
+    static void run(const uint8_t* ptr, ...) {
+        auto ptr_view = imr::fixed_size_value<void*>::make_view(ptr);
+        auto chk_ptr = static_cast<uint8_t*>(ptr_view.load());
+        auto chk = data::cell::external_last_chunk::make_view(chk_ptr, data::cell::last_chunk_context(chk_ptr));
+        chk.get<data::cell::tags::chunk_back_pointer>().store(const_cast<uint8_t*>(ptr));
+    }
+};
+
+template<>
+struct mover<imr::tagged_type<data::cell::tags::chunk_back_pointer, imr::fixed_size_value<void*>>> {
+    static void run(const uint8_t* bptr, ...) {
+        auto bptr_view = imr::fixed_size_value<void*>::make_view(bptr);
+        auto ptr_ptr = static_cast<uint8_t*>(bptr_view.load());
+        auto ptr = imr::fixed_size_value<void*>::make_view(ptr_ptr);
+        ptr.store(const_cast<uint8_t*>(bptr));
+
+    }
+};
+
+}
 }
