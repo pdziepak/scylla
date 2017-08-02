@@ -133,6 +133,36 @@ struct get<0, T, Ts...> {
 template<typename... Ts>
 using head = get<0, Ts...>;
 
+template<typename... Ts>
+struct list { };
+
+template<size_t N, typename Result, typename... Us>
+struct do_take { };
+
+template<typename... Ts>
+struct do_take<0, list<Ts...>> {
+    using type = list<Ts...>;
+};
+
+template<typename... Ts, typename U, typename... Us>
+struct do_take<0, list<Ts...>, U, Us...> {
+    using type = list<Ts...>;
+};
+
+template<size_t N, typename... Ts, typename U, typename... Us>
+struct do_take<N, list<Ts...>, U, Us...> {
+    using type = typename do_take<N - 1, list<Ts..., U>, Us...>::type;
+};
+
+template<size_t N, typename... Ts>
+using take = typename do_take<N, list<>, Ts...>::type;
+
+template<typename... Ts, typename Function>
+void for_each(list<Ts...>, Function&& fn) {
+    auto ignore_me = { 0, (fn(static_cast<Ts*>(nullptr)), 0)... };
+    (void)ignore_me;
+};
+
 }
 
 namespace internal {
@@ -727,6 +757,8 @@ class structure_sizer {
 public:
     explicit structure_sizer(size_t size) noexcept : _size(size) { }
 
+    uint8_t* position() const noexcept { return nullptr; }
+
     size_t done() noexcept { return _size; }
 };
 
@@ -735,6 +767,8 @@ class structure_sizer<Member, Members...> {
     size_t _size;
 public:
     explicit structure_sizer(size_t size) noexcept : _size(size) { }
+
+    uint8_t* position() const noexcept { return nullptr; }
 
     template<typename... Args>
     structure_sizer<Members...> serialize(Args&&... args) noexcept {
@@ -748,6 +782,8 @@ class structure_sizer<optional_member<Tag, Type>, Members...> {
     size_t _size;
 public:
     explicit structure_sizer(size_t size) noexcept : _size(size) { }
+
+    uint8_t* position() const noexcept { return nullptr; }
 
     template<typename... Args>
     structure_sizer<Members...> serialize(Args&&... args) noexcept {
@@ -766,6 +802,8 @@ class structure_sizer<variant_member<Tag, Types...>, Members...> {
 public:
     explicit structure_sizer(size_t size) noexcept : _size(size) { }
 
+    uint8_t* position() const noexcept { return nullptr; }
+
     template<typename AlternativeTag, typename... Args>
     structure_sizer<Members...> serialize_as(Args&&... args) noexcept {
         using type = variant<Tag, Types...>;
@@ -779,6 +817,7 @@ struct structure_serializer {
     uint8_t* _out;
 public:
     explicit structure_serializer(uint8_t* out) noexcept : _out(out) { }
+    uint8_t* position() const noexcept { return _out; }
     uint8_t* done() noexcept { return _out; }
 };
 
@@ -787,6 +826,8 @@ class structure_serializer<Member, Members...> {
     uint8_t* _out;
 public:
     explicit structure_serializer(uint8_t* out) noexcept : _out(out) { }
+
+    uint8_t* position() const noexcept { return _out; }
 
     template<typename... Args>
     structure_serializer<Members...> serialize(Args&&... args) noexcept {
@@ -800,6 +841,8 @@ class structure_serializer<optional_member<Tag, Type>, Members...> {
     uint8_t* _out;
 public:
     explicit structure_serializer(uint8_t* out) noexcept : _out(out) { }
+
+    uint8_t* position() const noexcept { return _out; }
 
     template<typename... Args>
     structure_serializer<Members...> serialize(Args&&... args) noexcept {
@@ -817,6 +860,8 @@ class structure_serializer<variant_member<Tag, Types...>, Members...> {
     uint8_t* _out;
 public:
     explicit structure_serializer(uint8_t* out) noexcept : _out(out) { }
+
+    uint8_t* position() const noexcept { return _out; }
 
     template<typename AlternativeTag, typename... Args>
     structure_serializer<Members...> serialize_as(Args&&... args) noexcept {
@@ -936,7 +981,23 @@ public:
     static auto get_first_member(const uint8_t* in, const Context& ctx = no_context) noexcept {
         return meta::head<Members...>::type::type::make_view(in, ctx);
     }
+
+    template<size_t N, typename Context = decltype(no_context)> // why N and not tag?
+    static auto get_member(const uint8_t* in, const Context& context = no_context) noexcept {
+        // TODO: dedup with serialized_object_size and basic_view
+        size_t total_size = 0;
+        meta::for_each(meta::take<N, Members...>(), [&] (auto ptr) {
+            using member = std::remove_pointer_t<decltype(ptr)>;
+            auto offset = in + total_size;
+            auto this_size = member::type::serialized_object_size(offset, context.template context_for<typename member::tag>(offset));
+            total_size += this_size;
+        });
+        return meta::get<N, Members...>::type::type::make_view(in + total_size, context);
+    }
 };
+
+template<typename Tag, typename T>
+struct tagged_type : T { };
 
 namespace methods {
 
@@ -1039,6 +1100,13 @@ struct get_method<Method, variant<Tag, Members...>>
     : std::conditional_t<all_of<member_has_trivial_method<Method>::template type, Members...>::value,
                          trivial_method<Method>,
                          generate_method<Method, variant<Tag, Members...>>>
+{ };
+
+template<template<class> typename Method, typename Tag, typename Type>
+struct get_method<Method, tagged_type<Tag,Type>>
+    : std::conditional_t<has_trivial_method<Method, Type>::value,
+                         trivial_method<Method>,
+                         Method<Type>>
 { };
 
 template<typename... Members>
