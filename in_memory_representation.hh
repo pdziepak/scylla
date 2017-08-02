@@ -190,6 +190,25 @@ static struct {
     auto context_for(...) const noexcept { return *this; }
 } no_context;
 
+template<typename T>
+class placeholder {
+    uint8_t* _pointer = nullptr;
+public:
+    placeholder() = default;
+    explicit placeholder(uint8_t* ptr) noexcept : _pointer(ptr) { }
+
+    void set_pointer(uint8_t* ptr) noexcept { _pointer = ptr; }
+
+    template<typename... Args>
+    void serialize(Args&&... args) noexcept {
+        if (!_pointer) {
+            // Please, Mx Compiler, be able to optimise this 'if' away.
+            return;
+        }
+        T::serialize(_pointer, std::forward<Args>(args)...);
+    }
+};
+
 template<typename Tag>
 class set_flag {
     bool _value = true;
@@ -334,8 +353,17 @@ public:
         return sizeof(Type);
     }
 
+    static size_t size_when_serialized(placeholder<fixed_size_value<Type>>&) noexcept {
+        return sizeof(Type);
+    }
+
     static size_t serialize(uint8_t* out, const Type& value) noexcept {
         internal::write_pod(value, out);
+        return sizeof(Type);
+    }
+
+    static size_t serialize(uint8_t* out, placeholder<fixed_size_value<Type>>& phldr) noexcept {
+        phldr.set_pointer(out);
         return sizeof(Type);
     }
 };
@@ -998,6 +1026,9 @@ public:
 
 template<typename Tag, typename T>
 struct tagged_type : T { };
+
+template<typename Tag, typename T>
+struct placeholder<tagged_type<Tag, T>> : placeholder<T> { };
 
 namespace methods {
 
