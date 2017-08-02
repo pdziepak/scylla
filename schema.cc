@@ -343,7 +343,9 @@ schema::schema(const raw_schema& raw, stdx::optional<raw_view_info> raw_view_inf
         generate_row_imr_info(static_columns()),
     });
     _imr_data->lsa_regular_row_migrator
-        = std::make_unique<v2::rows_entry::lsa_migrator<data::row::context>>(data::row::context(_imr_data->regular_row_info));
+        = std::make_unique<v2::rows_entry::lsa_migrator<imr::utils::context_factory<
+            data::row::context, data::schema_row_info>>>(imr::utils::context_factory<data::row::context,
+                                                                                     data::schema_row_info>(_imr_data->regular_row_info));
 }
 
 template<typename ColumnRange>
