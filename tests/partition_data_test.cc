@@ -30,6 +30,8 @@
 #include <boost/range/algorithm_ext/iota.hpp>
 #include <boost/range/algorithm/sort.hpp>
 
+#include "utils/logalloc.hh"
+
 #include "schema.hh"
 #include "partition_data.hh"
 
@@ -341,4 +343,77 @@ BOOST_AUTO_TEST_CASE(test_rows_entry) {
     }
 }
 
-// Test lsa migration for all of them
+BOOST_AUTO_TEST_CASE(test_rows_entry_lsa) {
+    // dedup schema
+    auto s = schema_builder("ks", "cf")
+        .with_column("pk", bytes_type, column_kind::partition_key)
+        .with_column("v1", int32_type)
+        .with_column("v2", bytes_type)
+        .with_column("v3", bytes_type)
+        .with_column("v4", int32_type)
+        .with_column("v5", long_type)
+        .with_column("v6", int32_type)
+        .build();
+
+    logalloc::region lsa;
+
+    with_allocator(lsa.allocator(), [&] {
+        auto v2 = random_int<uint16_t>();
+        auto v3 = random_int<uint8_t>();
+        auto v5 = random_int<int64_t>();
+
+        auto ts = api::new_timestamp();
+        auto blob2 = random_bytes(v2);
+        auto blob3 = random_bytes(v3);
+
+        auto check_re = [&] (const v2::rows_entry_ptr& re) {
+            auto cells = re.cells();
+            auto it = cells.begin();
+
+            BOOST_CHECK(it != cells.end());
+            auto i_a_c = *it;
+            BOOST_CHECK_EQUAL(i_a_c.first, 1);
+            BOOST_CHECK(i_a_c.second.is_live());
+            BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+            BOOST_CHECK(boost::equal(i_a_c.second.value(), blob2));
+
+            ++it;
+            BOOST_CHECK(it != cells.end());
+            i_a_c = *it;
+            BOOST_CHECK_EQUAL(i_a_c.first, 2);
+            BOOST_CHECK(i_a_c.second.is_live());
+            BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+            BOOST_CHECK(boost::equal(i_a_c.second.value(), blob3));
+
+            ++it;
+            BOOST_CHECK(it != cells.end());
+            i_a_c = *it;
+            BOOST_CHECK_EQUAL(i_a_c.first, 4);
+            BOOST_CHECK(i_a_c.second.is_live());
+            BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+            BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+
+            ++it;
+            BOOST_CHECK(it == cells.end());
+        };
+
+        // TODO: disable relcaim here
+        auto re = v2::rows_entry_ptr::make(*s, clustering_key::make_empty(), [&] (auto& builder) {
+            builder.set_cell(1, ts, blob2);
+            builder.set_cell(2, ts, blob3);
+            builder.set_cell(4, ts, long_type->decompose(data_value(v5)));
+        });
+        check_re(re);
+
+        intrusive_set_external_comparator<v2::rows_entry_header, &v2::rows_entry_header::_link> tree;
+        tree.insert_before(tree.end(), *re.release());
+
+        lsa.full_compaction();
+        BOOST_TEST_MESSAGE("full compaction completed");
+
+        re = v2::rows_entry_ptr(*s, *static_cast<v2::rows_entry*>(&*tree.begin()));
+        tree.erase(tree.begin());
+        BOOST_CHECK(tree.empty());
+        check_re(re);
+    });
+}
