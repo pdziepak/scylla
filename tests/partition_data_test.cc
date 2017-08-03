@@ -44,6 +44,9 @@ thread_local disk_error_signal_type general_disk_error;
 thread_local imr::utils::context_factory<data::cell::last_chunk_context> lcc;
 thread_local imr::utils::lsa_migrate_fn<data::cell::external_last_chunk,
         imr::utils::context_factory<data::cell::last_chunk_context>> data::cell::lsa_last_chunk_migrate_fn(lcc);
+thread_local imr::utils::context_factory<data::cell::chunk_context> ecc;
+thread_local imr::utils::lsa_migrate_fn<data::cell::external_chunk,
+        imr::utils::context_factory<data::cell::chunk_context>> data::cell::lsa_chunk_migrate_fn(ecc);
 
 // duplicated from imr_test.cc
 static constexpr auto random_test_iteration_count = 20;
@@ -358,7 +361,7 @@ BOOST_AUTO_TEST_CASE(test_rows_entry_lsa) {
     logalloc::region lsa;
 
     with_allocator(lsa.allocator(), [&] {
-        auto v2 = random_int<uint16_t>();
+        auto v2 = random_int<uint32_t>() % 10'000'000;
         auto v3 = random_int<uint8_t>();
         auto v5 = random_int<int64_t>();
 
