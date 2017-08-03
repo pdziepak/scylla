@@ -185,7 +185,7 @@ inline void write_pod(T obj, CharT* out) noexcept {
 
 enum class const_view { no, yes, };
 
-static struct {
+static struct no_context_t {
     template<typename Tag>
     auto context_for(...) const noexcept { return *this; }
 } no_context;
@@ -920,11 +920,6 @@ struct structure {
             size_t idx = 0;
             _offsets[0] = 0;
             auto visit_member = [&] (auto ptr) noexcept {
-                // FIXME: This won't prevent us from expecting context to be able
-                // to provide information about the last element.
-                if (idx + 1 >= sizeof...(Members)) {
-                    return;
-                }
                 using member = std::remove_pointer_t<decltype(ptr)>;
                 using mtype = typename member::type;
                 auto total_size = _offsets[idx];
@@ -933,8 +928,7 @@ struct structure {
                 total_size += this_size;
                 _offsets[++idx] = total_size;
             };
-            auto ignore_me = { (visit_member((Members*)0), 0)... };
-            (void)ignore_me;
+            meta::for_each(meta::take<sizeof...(Members) - 1, Members...>(), visit_member);
         }
 
         pointer_type raw_pointer() const noexcept { return _ptr; }
