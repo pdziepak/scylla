@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include <boost/range/algorithm/copy.hpp>
+
 // something about data representation goes here
 #include "in_memory_representation.hh"
 #include "imr/utils.hh"
@@ -59,6 +61,7 @@ public:
 
 struct cell {
     static constexpr size_t maximum_internal_storage_length = 64;
+    static constexpr size_t maximum_external_chunk_length = 8 * 1024;
 
     struct tags {
         class flags;
@@ -124,13 +127,22 @@ struct cell {
         imr::member<tags::chunk_data, imr::fixed_buffer<tags::chunk_data>>
     >;
 
+    using external_chunk = imr::structure<
+        imr::member<tags::chunk_back_pointer, imr::tagged_type<tags::chunk_back_pointer, imr::fixed_size_value<void*>>>,
+        imr::member<tags::chunk_next, imr::fixed_size_value<void*>>,
+        imr::member<tags::chunk_data, imr::fixed_buffer<tags::chunk_data>>
+    >;
+
     class context;
     class last_chunk_context;
+    class chunk_context;
 
     class view;
 
     static thread_local imr::utils::lsa_migrate_fn<external_last_chunk,
             imr::utils::context_factory<last_chunk_context>> lsa_last_chunk_migrate_fn;
+    static thread_local imr::utils::lsa_migrate_fn<external_chunk,
+            imr::utils::context_factory<chunk_context>> lsa_chunk_migrate_fn;
 
     static auto make_live(const type_info& ti, api::timestamp_type ts, bytes_view value) noexcept {
         return [&ti, ts, value] (auto serializer, auto allocations) noexcept {
@@ -142,6 +154,7 @@ struct cell {
                 if (ti.is_fixed_size() || value.empty()) {
                     return ser.template serialize_as<tags::fixed_value>(value);
                 } else {
+                    // TODO: consider flattening serializers of nested structs
                     return ser.template serialize_as<tags::variable_value>([&] (auto serializer) noexcept {
                         auto ser = serializer
                             .serialize(value.size());
@@ -150,18 +163,36 @@ struct cell {
                                 return ser.template serialize_as<tags::data>(value);
                             } else {
                                 auto pointer = ser.position();
-                                return ser.template serialize_as<tags::pointer>(
-                                    allocations.template allocate2<external_last_chunk>(&lsa_last_chunk_migrate_fn, [&serializer, value] (auto chunk_serializer, auto back_ptr) noexcept {
-                                        // FIXME
-                                        assert(value.size() < std::numeric_limits<uint16_t>::max());
-                                        // FIXME: try to avoid recursion once support for fragmentation is added
-                                        return chunk_serializer
-                                                .serialize(back_ptr)
-                                                .serialize(value.size())
-                                                .serialize(value)
+                                // TODO: propagate compile-time info about the phase we are in
+                                imr::placeholder<imr::fixed_size_value<void*>> placeholder;
+                                auto s = ser.template serialize_as<tags::pointer>(placeholder);
+                                auto offset = 0;
+                                while (value.size() - offset > maximum_external_chunk_length) {
+                                    uint8_t* ptr2 = nullptr;
+                                    imr::placeholder<imr::fixed_size_value<void*>> phldr;
+                                    auto ptr = allocations.template allocate2<external_chunk>(&lsa_chunk_migrate_fn, [&] (auto chunk_serializer, auto back_ptr) noexcept {
+                                        auto s1 = chunk_serializer
+                                                .serialize(back_ptr);
+                                        ptr2 = s1.position();
+                                         return s1.serialize(phldr)
+                                                .serialize(bytes_view(value.begin() + offset, maximum_external_chunk_length))
                                                 .done();
-                                    }, pointer)
-                                );
+                                    }, pointer);
+                                    placeholder.serialize(ptr);
+                                    placeholder = phldr;
+                                    offset += maximum_external_chunk_length;
+                                    pointer = ptr2;
+                                }
+                                auto ptr = allocations.template allocate2<external_last_chunk>(&lsa_last_chunk_migrate_fn, [&] (auto chunk_serializer, auto back_ptr) noexcept {
+                                    assert(value.size() - offset < std::numeric_limits<uint16_t>::max());
+                                    return chunk_serializer
+                                            .serialize(back_ptr)
+                                            .serialize(value.size() - offset)
+                                            .serialize(bytes_view(value.begin() + offset, value.size() - offset))
+                                            .done();
+                                }, pointer);
+                                placeholder.serialize(ptr);
+                                return s;
                             }
                         }().done();
                     });
@@ -205,6 +236,18 @@ template<>
 inline size_t cell::last_chunk_context::size_of<cell::tags::chunk_data>() const noexcept {
     return _size.load();
 }
+
+struct cell::chunk_context {
+    explicit constexpr chunk_context(const uint8_t*) noexcept { }
+
+    template<typename Tag>
+    static constexpr size_t size_of() noexcept { return cell::maximum_external_chunk_length; }
+
+    template<typename Tag>
+    auto context_for(...) const noexcept {
+        return *this;
+    }
+};
 
 class cell::context {
     cell::flags::view _flags;
@@ -333,28 +376,39 @@ public:
         return _view.get<tags::value>().as<tags::counter_update>().load();
     }
 
-    // TODO: support fragmented buffers
-    bytes_view value() const noexcept {
+    // TODO: do not linearise, provide apropriate wrapper
+    bytes value() const noexcept {
         // TODO: let visit take Visitors... and call build_visitor internally
         return _view.get<tags::value>().visit(build_visitor(
-            [] (fixed_value::view view) { return view; },
+            [] (fixed_value::view view) { return bytes(view.begin(), view.end()); },
             [&] (variable_value::view view) {
                 return view.get<tags::value_data>().visit(build_visitor(
                     [&view] (imr::fixed_size_value<void*>::view ptr) {
                         auto size = view.get<tags::value_size>().load();
-
                         auto ex_ptr = static_cast<const uint8_t*>(ptr.load());
+
+                        bytes data(bytes::initialized_later(), size);
+                        auto out = data.begin();
+                        while (size > maximum_external_chunk_length) {
+                            auto ex_ctx = chunk_context(ex_ptr);
+                            auto ex_view = external_chunk::make_view(ex_ptr, ex_ctx);
+                            ex_ptr = static_cast<const uint8_t*>(ex_view.get<tags::chunk_next>().load());
+                            out = boost::copy(ex_view.get<tags::chunk_data>(ex_ctx), out);
+                            size -= maximum_external_chunk_length;
+                        }
+
                         auto ex_ctx = last_chunk_context(ex_ptr);
                         auto ex_view = external_last_chunk::make_view(ex_ptr, ex_ctx);
                         assert(size == ex_view.get<tags::last_chunk_size>(ex_ctx).load());
-                        return ex_view.get<tags::chunk_data>(ex_ctx);
+                        boost::copy(ex_view.get<tags::chunk_data>(ex_ctx), out);
+                        return data;
                     },
                     [] (imr::fixed_buffer<tags::data>::view data) {
-                        return data;
+                        return bytes(data.begin(), data.end());
                     }
                 ), _context.context_for<tags::variable_value>(view.raw_pointer())); // TODO: hide this raw_pointer
             },
-            [] (...) -> bytes_view { __builtin_unreachable(); }
+            [] (...) -> bytes { __builtin_unreachable(); }
         ), _context);
     }
 };
@@ -478,19 +532,43 @@ struct row {
     }
 };
 
+class fragment_chain_destructor_context : public imr::no_context_t {
+    size_t _total_length;
+public:
+    explicit fragment_chain_destructor_context(size_t total_length) noexcept
+        : _total_length(total_length) { }
+
+    void next_chunk() noexcept { _total_length -= data::cell::maximum_external_chunk_length; }
+    bool is_last_chunk() const noexcept { return _total_length <= data::cell::maximum_external_chunk_length; }
+};
+
 }
 
 namespace imr {
 namespace methods {
 
 template<>
-struct destructor<imr::tagged_type<data::cell::tags::pointer, imr::fixed_size_value<void*>>> {
-static void run(const uint8_t* ptr, ...) {
-    auto ptr_view = imr::fixed_size_value<void*>::make_view(ptr);
-    auto chk = static_cast<const uint8_t*>(ptr_view.load());
-    auto len = data::cell::external_last_chunk::serialized_object_size(chk, data::cell::last_chunk_context(chk));
-    current_allocator().free(ptr_view.load(), len);
-}
+struct destructor<data::cell::variable_value> {
+    static void run(const uint8_t* ptr, ...) {
+        // TODO: make_view() doesn't need context
+        auto varval = data::cell::variable_value::make_view(ptr);
+        auto total_length = varval.get<data::cell::tags::value_size>().load();
+        if (total_length <= data::cell::maximum_internal_storage_length) {
+            return;
+        }
+        auto ctx = data::fragment_chain_destructor_context(total_length);
+        auto ptr_view = varval.get<data::cell::tags::value_data>().as<data::cell::tags::pointer>();
+        auto chk = static_cast<const uint8_t*>(ptr_view.load());
+        size_t len;
+        if (ctx.is_last_chunk()) {
+            len = data::cell::external_last_chunk::serialized_object_size(chk, data::cell::last_chunk_context(chk));
+            imr::methods::destroy<data::cell::external_last_chunk>(static_cast<const uint8_t*>(ptr_view.load()));
+        } else {
+            len = data::cell::external_chunk::serialized_object_size(chk, data::cell::chunk_context(chk));
+            imr::methods::destroy<data::cell::external_chunk>(static_cast<const uint8_t*>(ptr_view.load()), ctx);
+        }
+        current_allocator().free(ptr_view.load(), len); // don't make me probvide this, ask the migrator
+    }
 };
 
 template<>
@@ -498,6 +576,7 @@ struct mover<imr::tagged_type<data::cell::tags::pointer, imr::fixed_size_value<v
     static void run(const uint8_t* ptr, ...) {
         auto ptr_view = imr::fixed_size_value<void*>::make_view(ptr);
         auto chk_ptr = static_cast<uint8_t*>(ptr_view.load());
+        // FIXME: it is not necessairly a last chunk
         auto chk = data::cell::external_last_chunk::make_view(chk_ptr, data::cell::last_chunk_context(chk_ptr));
         chk.get<data::cell::tags::chunk_back_pointer>().store(const_cast<uint8_t*>(ptr));
     }
@@ -511,6 +590,41 @@ struct mover<imr::tagged_type<data::cell::tags::chunk_back_pointer, imr::fixed_s
         auto ptr = imr::fixed_size_value<void*>::make_view(ptr_ptr);
         ptr.store(const_cast<uint8_t*>(bptr));
 
+    }
+};
+
+template<>
+struct destructor<data::cell::external_chunk> {
+    static void run(const uint8_t* ptr, data::fragment_chain_destructor_context ctx) {
+        ctx.next_chunk();
+
+        auto echk_view = data::cell::external_chunk::make_view(ptr);
+        auto ptr_view = echk_view.get<data::cell::tags::chunk_next>();
+        auto chk = static_cast<const uint8_t*>(ptr_view.load());
+        size_t len;
+        if (ctx.is_last_chunk()) {
+            len = data::cell::external_last_chunk::serialized_object_size(chk, data::cell::last_chunk_context(chk));
+            imr::methods::destroy<data::cell::external_last_chunk>(static_cast<const uint8_t*>(ptr_view.load()));
+        } else {
+            len = data::cell::external_chunk::serialized_object_size(chk, data::cell::chunk_context(chk));
+            imr::methods::destroy<data::cell::external_chunk>(static_cast<const uint8_t*>(ptr_view.load()), ctx);
+        }
+        current_allocator().free(ptr_view.load(), len); // don't make me probvide this, ask the migrator
+    }
+};
+
+template<>
+struct mover<data::cell::external_chunk> {
+    static void run(const uint8_t* ptr, ...) {
+        auto echk_view = data::cell::external_chunk::make_view(ptr, data::cell::chunk_context(ptr));
+        auto next_ptr = static_cast<uint8_t*>(echk_view.get<data::cell::tags::chunk_next>().load());
+        auto bptr = imr::fixed_size_value<void*>::make_view(next_ptr);
+        bptr.store(const_cast<uint8_t*>(ptr + echk_view.offset_of<data::cell::tags::chunk_next>()));
+
+        // TODO: remove this and specialise only for forward pointer
+        auto back_ptr = static_cast<uint8_t*>(echk_view.get<data::cell::tags::chunk_back_pointer>().load());
+        auto nptr = imr::fixed_size_value<void*>::make_view(back_ptr);
+        nptr.store(const_cast<uint8_t*>(ptr));
     }
 };
 
