@@ -188,9 +188,10 @@ public:
     // TODO: pass current_allocator() as an argument
     template<typename Writer>
     static rows_entry_ptr make(const schema& s, const clustering_key& ck, Writer&& writer) {
+        data::row::serialization_state state;
         return rows_entry_ptr(s.regular_row_imr_info(),
                               rows_entry::create(rows_entry_header(ck), [&] (auto serializer, auto allocator) {
-                                  return serializer.serialize([&] (auto array_serializer) {
+                                  return serializer.serialize(nullptr).serialize(state, [&] (auto array_serializer) {
                                       data::row::row_builder<decltype(array_serializer)> rb(array_serializer);
                                       row_builder<decltype(rb), decltype(allocator)> builder(s.regular_row_imr_info(), std::move(rb), std::move(allocator));
                                       std::forward<Writer>(writer)(builder);
@@ -200,8 +201,9 @@ public:
     }
 
     void apply(const schema& s, rows_entry_ptr& other) {
+        data::row::serialization_state state;
         auto re = rows_entry::create(rows_entry_header(_entry->key()), [&] (auto serializer, auto allocator) {
-            return serializer.serialize([&] (auto array_serializer) {
+            return serializer.serialize(nullptr).serialize(state, [&] (auto array_serializer) {
                 data::row::row_builder<decltype(array_serializer)> rb(array_serializer);
                 combine2(cells(), other.cells(), make_visitor(
                     [&] (auto&& id_a_c) {
@@ -228,9 +230,10 @@ public:
     }
 
     rows_entry_ptr copy(const schema& s) {
+        data::row::serialization_state state;
         return rows_entry_ptr(_view.context(),
                               rows_entry::create(rows_entry_header(_entry->key()), [&] (auto serializer, auto allocator) {
-                                  return serializer.serialize([&] (auto array_serializer) {
+                                  return serializer.serialize(nullptr).serialize(state, [&] (auto array_serializer) {
                                       data::row::row_builder<decltype(array_serializer)> rb(array_serializer);
                                       for (auto&& id_a_c : cells()) {
                                           data::cell::view& cell = id_a_c.second;
@@ -243,6 +246,7 @@ public:
     }
 
     stdx::optional<rows_entry_ptr> difference(const schema& s, const rows_entry_ptr& other) {
+        data::row::serialization_state state;
         std::array<stdx::optional<data::cell::view>, data::row::max_cell_count> diff_cells;
         size_t cell_count = 0;
         combine3(cells(), other.cells(), make_visitor(
@@ -259,7 +263,7 @@ public:
         }
         return rows_entry_ptr(_view.context(),
                               rows_entry::create(rows_entry_header(_entry->key()), [&] (auto serializer, auto allocator) {
-                                  return serializer.serialize([&] (auto array_serializer) {
+                                  return serializer.serialize(nullptr).serialize(state, [&] (auto array_serializer) {
                                       data::row::row_builder<decltype(array_serializer)> rb(array_serializer);
                                       for (auto i = 0u; i < cell_count; i++) {
                                           if (!diff_cells[i]) {

@@ -159,7 +159,8 @@ BOOST_AUTO_TEST_CASE(test_row) {
         };
 
         // Phase 1: determine sizes of all objects
-        auto expected_size = data::row::size_of(writer, allocator.get_sizer());
+        data::row::serialization_state state;
+        auto expected_size = data::row::size_of(state, writer, allocator.get_sizer());
         BOOST_TEST_MESSAGE("row size: " << expected_size);
 
         // Phase 2: allocate necessary buffers
@@ -167,7 +168,7 @@ BOOST_AUTO_TEST_CASE(test_row) {
         allocator.allocate_all();
 
         // Phase 3: serialise objects
-        BOOST_CHECK_EQUAL(data::row::serialize(buffer.get(), writer, allocator.get_serializer()), expected_size);
+        BOOST_CHECK_EQUAL(data::row::serialize(buffer.get(), state, writer, allocator.get_serializer()), expected_size);
 
         auto view = data::row::make_view(sri, buffer.get());
         size_t idx = 0;

@@ -425,50 +425,81 @@ inline void cell::destroy(const type_info& ti, uint8_t* ptr) noexcept {
 struct row {
     struct tags {
         class cells;
+        class next;
+        class prev;
     };
     static constexpr size_t max_cell_count = 16;
     using cell_array = imr::containers::sparse_array<cell::structure, max_cell_count>;
-    using structure = imr::structure<
+
+    using external_chunk = imr::structure<
+        imr::member<tags::next, imr::fixed_size_value<void*>>,
+        imr::member<tags::prev, imr::fixed_size_value<void*>>,
         imr::member<tags::cells, cell_array>
     >;
 
+    using structure = imr::structure<
+        imr::member<tags::next, imr::fixed_size_value<void*>>,
+        imr::member<tags::cells, cell_array>
+    >;
+
+    using serialization_state = cell_array::serialization_state;
+
     template<typename Writer, typename... Args>
-    static size_t size_of(Writer&& writer, Args&&... args) {
-        return structure::size_when_serialized([&writer, &args...] (auto serializer) {
+    static size_t size_of(serialization_state& state, Writer&& writer, Args&&... args) {
+        return structure::size_when_serialized([&writer, &state, &args...] (auto serializer) {
             return serializer
-                .serialize([&writer, &args...] (auto array_sizer) {
+                .serialize(nullptr)
+                .serialize(state, [&writer, &args...] (auto array_sizer) {
                     return writer(row_builder<decltype(array_sizer)>(array_sizer), std::forward<Args>(args)...);
                 }).done();
         });
     }
 
     template<typename Writer, typename... Args>
-    static size_t serialize(uint8_t* ptr, Writer&& writer, Args&&... args) {
-        return structure::serialize(ptr, [&writer, &args...] (auto serializer) {
+    static size_t serialize(uint8_t* ptr, serialization_state& state, Writer&& writer, Args&&... args) {
+        return structure::serialize(ptr, [&writer, &state, &args...] (auto serializer) {
             return serializer
-                .serialize([&writer, &args...] (auto array_serializer) {
+                .serialize(nullptr)
+                .serialize(state, [&writer, &args...] (auto array_serializer) {
                     return writer(row_builder<decltype(array_serializer)>(array_serializer), std::forward<Args>(args)...);
                 }).done();
         });
     }
 
-    // TODO: how to deal with fragmented rows?
-    template<typename Writer>
+    template<typename Writer>//, typename Allocator>
     class row_builder {
         Writer _writer;
+        //stx::optional<typename Allocator::wrapped<Writer>> _fragment_writer;
+        //Allocator _allocator;
+        //column_id _max_id;
+       // imr::placeholder<imr::fixed_size_value<void*>> _next;
+    /*private:
+        void advance_to_fragment(size_t id) {
+            imr::placeholder<imr::fixed_size_value<void*>> nxt;
+            while (id <= _max_id) {
+                _max_id += max_cell_count;
+                auto ptr = _writer.done().done();
+                _next.serialize(ptr);
+                _writer = _allocator.allocate2<external_chunk>(_schema.row_lsa_migrator[_max_id / max_cell_count])
+                        .serialize(_next)
+                        .serialize(ptr)
+                        .serialize_sparse_array();
+            }
+        }*/
     public:
         explicit row_builder(Writer wr) : _writer(wr) { }
 
         template<typename... Args>
         row_builder& set_live_cell(size_t id, Args&&... args) {
+           // if (id >= _max_id) {
+           //     advance_to_fragment(id);
+           // }
             _writer.emplace(id, std::forward<Args>(args)...);
             return *this;
         }
-        row_builder& remove_cell(size_t id) noexcept {
-            _writer.erase(id);
-            return *this;
-        }
+
         auto done() noexcept {
+         //   _next.serialize(nullptr);
             return _writer.done();
         }
     };

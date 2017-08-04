@@ -1175,166 +1175,58 @@ void move(const uint8_t* ptr, const Context& context = no_context) {
 
 namespace containers {
 
+struct sparse_array_serialization_state {
+    uint32_t element_count = 0;
+};
+
 template<typename T, size_t MaxElementCount>
 struct sparse_array_sizer {
-    std::array<uint16_t, MaxElementCount> _sizes{};
+    sparse_array_serialization_state& _state;
+    uint32_t _total_size = 0;
 public:
+    explicit sparse_array_sizer(sparse_array_serialization_state& state) noexcept
+        : _state(state) { }
+
     template<typename... Args>
     sparse_array_sizer& emplace(size_t idx, Args&&... args) noexcept {
-        _sizes[idx] = T::size_when_serialized(std::forward<Args>(args)...);
-        return *this;
-    }
-
-    sparse_array_sizer& erase(size_t idx) noexcept {
-        _sizes[idx] = 0;
-        return *this;
-    }
-
-    sparse_array_sizer& clear() noexcept {
-        _sizes = { };
+        _state.element_count = idx + 1;
+        _total_size += T::size_when_serialized(std::forward<Args>(args)...);
         return *this;
     }
 
     size_t done() noexcept {
-        size_t element_count = 0;
-        for (size_t idx = 0; idx < MaxElementCount; idx++) {
-            if (_sizes[idx]) {
-                element_count = idx + 1;
-            }
-        }
-
-        return boost::accumulate(_sizes, (element_count + 2) * sizeof(uint16_t), std::plus<uint16_t>());
-    }
-};
-struct dummy_allocator {
-    template<typename T, typename... Args>
-    uint8_t* allocate(Args&& ... args) noexcept {
-        return nullptr;
-    }
-
-    template<typename T, typename... Args>
-    uint8_t* allocate2(Args&& ... args) noexcept {
-        return nullptr;
-    }
-};
-// TODO: try to merge phase1 with sizer
-template<typename T, size_t MaxElementCount>
-struct sparse_array_writer_phase1 {
-    //std::bitset<MaxElementCount>& _overwritten;
-    std::array<uint16_t, MaxElementCount + 1>& _sizes;
-public:
-    explicit sparse_array_writer_phase1(std::array<uint16_t, MaxElementCount + 1>& offsets) noexcept
-            : _sizes(offsets) {
-        for (auto i = 0u; i < MaxElementCount; i++) {
-            _sizes[i] = _sizes[i + 1] - _sizes[i];
-        }
-    }
-
-    //template<typename... Args>
-    template<typename Writer, typename... Args>
-    sparse_array_writer_phase1& emplace(size_t idx, Writer&& wr, Args&&... args) noexcept {
-        //_overwritten[idx].set(true);
-        _sizes[idx] = T::size_when_serialized(std::forward<Writer>(wr), dummy_allocator());
-        return *this;
-    }
-
-    sparse_array_writer_phase1& erase(size_t idx) noexcept {
-        //_overwritten[idx].set(true);
-        _sizes[idx] = 0;
-        return *this;
-    }
-
-    sparse_array_writer_phase1& clear() noexcept {
-        //_overwritten.reset();
-        _sizes = { };
-        return *this;
-    }
-
-    size_t done() noexcept {
-        size_t element_count = 0;
-        for (size_t idx = 0; idx < MaxElementCount; idx++) {
-            if (_sizes[idx]) {
-                element_count = idx + 1;
-            }
-        }
-
-        uint16_t value = (element_count + 2) * sizeof(uint16_t);
-        for (auto& v : _sizes) {
-            value += std::exchange(v, value);
-        }
-
-        return element_count;
+        return _total_size + (_state.element_count + 1) * sizeof(uint16_t) + sizeof(uint8_t);
     }
 };
 
 template<typename T, size_t MaxElementCount>
-struct sparse_array_writer_phase1a {
-    std::bitset<MaxElementCount>& _overwritten;
-    std::array<uint16_t, MaxElementCount + 1>& _sizes;
-public:
-    explicit sparse_array_writer_phase1a(std::array<uint16_t, MaxElementCount + 1>& offsets, std::bitset<MaxElementCount>& ovw) noexcept
-            : _overwritten(ovw), _sizes(offsets) {
-        for (auto i = 0u; i < MaxElementCount; i++) {
-            _sizes[i] = _sizes[i + 1] - _sizes[i];
-        }
-    }
-
-    template<typename... Args>
-    sparse_array_writer_phase1a& emplace(size_t idx, Args&&... args) noexcept {
-        _overwritten.set(idx);
-        _sizes[idx] = T::size_when_serialized(std::forward<Args>(args)...);
-        return *this;
-    }
-
-    sparse_array_writer_phase1a& erase(size_t idx) noexcept {
-        _overwritten.set(idx);
-        _sizes[idx] = 0;
-        return *this;
-    }
-
-    sparse_array_writer_phase1a& clear() noexcept {
-        _overwritten.set();
-        _sizes = { };
-        return *this;
-    }
-
-    size_t done() noexcept {
-        size_t element_count = 0;
-        for (size_t idx = 0; idx < MaxElementCount; idx++) {
-            if (_sizes[idx]) {
-                element_count = idx + 1;
-            }
-        }
-
-        uint16_t value = (element_count + 2) * sizeof(uint16_t);
-        for (auto& v : _sizes) {
-            value += std::exchange(v, value);
-        }
-
-        return element_count;
-    }
-};
-
-template<typename T, size_t MaxElementCount>
-struct sparse_array_writer_phase2 {
-    std::array<uint16_t, MaxElementCount + 1>& _offsets;
+struct sparse_array_writer {
     uint8_t* _ptr;
+    uint16_t _element_count;
+    uint16_t _offset;
+    uint16_t _index = 0;
 public:
-    explicit sparse_array_writer_phase2(std::array<uint16_t, MaxElementCount + 1>& offsets, uint8_t* ptr) noexcept
-        : _offsets(offsets)
-        , _ptr(ptr)
-    { }
+    sparse_array_writer(uint8_t* ptr, sparse_array_serialization_state state) noexcept
+        : _ptr(ptr)
+        , _element_count(state.element_count)
+        , _offset((_element_count + 1) * sizeof(uint16_t) + sizeof(uint8_t))
+    {
+        internal::write_pod<uint8_t>(state.element_count, _ptr);
+    }
 
     template<typename... Args>
-    sparse_array_writer_phase2& emplace(size_t idx, Args&&... args) noexcept {
-        T::serialize(_ptr + _offsets[idx], std::forward<Args>(args)...);
+    sparse_array_writer& emplace(size_t idx, Args&&... args) noexcept {
+        while (_index <= idx) {
+            internal::write_pod(_offset, _ptr + sizeof(uint8_t) + _index++ * sizeof(uint16_t));
+        }
+        _offset += T::serialize(_ptr + _offset, std::forward<Args>(args)...);
         return *this;
     }
 
-    sparse_array_writer_phase2& erase(size_t idx, size_t n = 1) noexcept { return *this; }
-    sparse_array_writer_phase2& clear() noexcept { return *this; }
-
-    void done() noexcept { }
+    size_t done() noexcept {
+        internal::write_pod(_offset, _ptr + _element_count * sizeof(uint16_t) + sizeof(uint8_t));
+        return _offset;
+    }
 };
 
 // If all containers are able to tell the size of the contained objects,
@@ -1342,23 +1234,25 @@ public:
 
 template<typename T, size_t MaxElementCount>
 class sparse_array {
-    // make compatible with imr types so that it can be nested or stored
-    // inside other containers or structure
+    static_assert(MaxElementCount < std::numeric_limits<uint8_t>::max(),
+                  "MaxElementCount is too large");
+    // also, require that the whole sparse_array is smaller than 64 kB.
 
-    using offset_type = uint16_t; // choose using MaxElementCount
-    enum : size_t { header_size = (MaxElementCount + 2) * sizeof(offset_type) };
+    using offset_type = uint16_t;
 
     using pointer_type = uint8_t*;
     pointer_type _ptr;
 private:
     uint8_t* header_entry_for(size_t idx) const noexcept {
-        return _ptr + idx * sizeof(offset_type) + sizeof(uint16_t);
+        return _ptr + idx * sizeof(offset_type) + sizeof(uint8_t);
     }
 
     size_t end_position() const noexcept {
         return internal::read_pod<offset_type>(header_entry_for(MaxElementCount));
     }
 public:
+    using serialization_state = sparse_array_serialization_state;
+
     template<const_view is_const>
     class basic_view {
         using pointer_type = std::conditional_t<is_const == const_view::yes,
@@ -1370,40 +1264,40 @@ public:
         template<typename Context>
         struct range {
             pointer_type _ptr;
+            uint32_t _element_count;
             const Context& _ctx;
         public:
             class iterator : public std::iterator<std::input_iterator_tag, const std::pair<size_t, typename T::view>> {
                 const Context* _ctx;
                 pointer_type _base;
-                pointer_type _position;
+                uint32_t _index;
+                uint32_t _end;
             private:
                 void skip_absent() noexcept {
-                    auto header_end = _base + MaxElementCount * sizeof(offset_type) + sizeof(uint16_t);
-                    while (_position != header_end) {
-                        auto begin_pos = internal::read_pod<offset_type>(_position);
-                        auto end_pos = internal::read_pod<offset_type>(_position + sizeof(offset_type));
+                    while (_index != _end) {
+                        auto begin_pos = internal::read_pod<offset_type>(_base + _index * sizeof(offset_type));
+                        auto end_pos = internal::read_pod<offset_type>(_base + (_index + 1) * sizeof(offset_type));
                         if (begin_pos != end_pos) {
                             break;
                         }
-                        _position += sizeof(offset_type);
+                        _index++;
                     }
                 }
             public:
                 iterator() = default;
-                iterator(const Context& ctx, pointer_type base, pointer_type pos) noexcept
-                        : _ctx(&ctx), _base(base), _position(pos) {
+                iterator(const Context& ctx, pointer_type base, uint32_t element_count, uint32_t position = 0) noexcept
+                        : _ctx(&ctx), _base(base), _index(position), _end(element_count) {
                     skip_absent();
                 }
 
                 std::pair<size_t, typename T::view> operator*() const noexcept {
-                    auto idx = (_position - _base - 1) / sizeof(offset_type);
-                    auto ptr = _base + internal::read_pod<offset_type>(_position);
-                    auto ctx = _ctx->context_for_element(idx, ptr); // do not require this member to be present
-                    return std::make_pair(idx, T::make_view(ptr, ctx));
+                    auto ptr = _base + internal::read_pod<offset_type>(_base + _index * sizeof(offset_type)) - sizeof(uint8_t);
+                    auto ctx = _ctx->context_for_element(_index, ptr); // do not require this member to be present
+                    return std::make_pair(_index, T::make_view(ptr, ctx));
                 }
 
                 iterator& operator++() noexcept {
-                    _position += sizeof(offset_type);
+                    _index++;
                     skip_absent();
                     return *this;
                 }
@@ -1414,27 +1308,32 @@ public:
                 }
 
                 bool operator==(const iterator& other) const noexcept {
-                    return _position == other._position;
+                    return _index == other._index;
                 }
                 bool operator!=(const iterator& other) const noexcept {
                     return !(*this == other);
                 }
             };
         public:
-            range(pointer_type ptr, const Context& ctx) noexcept : _ptr(ptr), _ctx(ctx) { }
+            range(pointer_type ptr, const Context& ctx) noexcept
+                : _ptr(ptr)
+                , _element_count(internal::read_pod<uint8_t>(_ptr))
+                , _ctx(ctx)
+            { }
+
             using const_iterator = iterator;
+
             auto begin() const noexcept {
-                return iterator(_ctx, _ptr, _ptr + sizeof(offset_type));
+                return iterator(_ctx, _ptr + sizeof(uint8_t), _element_count);
             }
             auto end() const noexcept {
-                auto element_count = internal::read_pod<uint16_t>(_ptr);
-                return iterator(_ctx, _ptr, _ptr + (element_count + 1) * sizeof(offset_type));
+                return iterator(_ctx, _ptr + sizeof(uint8_t), _element_count, _element_count);
             }
 
             stdx::optional<typename T::view> operator[](size_t idx) noexcept {
-                auto entry = _ptr + (idx + 1) * sizeof(offset_type);
+                auto entry = _ptr + sizeof(uint8_t) + idx * sizeof(offset_type);
                 auto begin_pos = internal::read_pod<offset_type>(entry);
-                auto end_pos = internal::read_pod<offset_type>(entry + sizeof(uint16_t));
+                auto end_pos = internal::read_pod<offset_type>(entry + sizeof(uint8_t));
                 if (begin_pos == end_pos) {
                     return stdx::nullopt;
                 }
@@ -1443,7 +1342,7 @@ public:
         };
 
         size_t size() const {
-            return internal::read_pod<uint16_t>(_ptr);
+            return internal::read_pod<uint8_t>(_ptr);
         }
 
         bool empty() const {
@@ -1464,91 +1363,20 @@ public:
 
     template<typename Context = decltype(no_context)>
     static size_t serialized_object_size(const uint8_t* ptr, const Context& = no_context) {
-        auto element_count = internal::read_pod<uint16_t>(ptr);
-        return internal::read_pod<uint16_t>(ptr + (element_count + 1) * sizeof(uint16_t));
+        auto element_count = internal::read_pod<uint8_t>(ptr);
+        return internal::read_pod<uint16_t>(ptr + element_count * sizeof(uint16_t) + sizeof(uint8_t));
     }
 
     template<typename Writer>
-    static size_t size_when_serialized(Writer&& writer) noexcept {
-        return std::forward<Writer>(writer)(sparse_array_sizer<T, MaxElementCount>());
+    static size_t size_when_serialized(serialization_state& state, Writer&& writer) noexcept {
+        return std::forward<Writer>(writer)(sparse_array_sizer<T, MaxElementCount>(state));
     }
 
     template<typename Serializer>
-    static size_t serialize(uint8_t* out, Serializer&& serializer) noexcept {
-        std::array<uint16_t, MaxElementCount + 1> offsets{};
-
-        // Phase 1: get offsets of all elements
-        auto element_count = serializer(sparse_array_writer_phase1<T, MaxElementCount>(offsets));
-
-        // Write element offsets
-        // FIXME: why not just std::copy_n part of the array? we are all pods here
-        auto ptr = out;
-        internal::write_pod<uint16_t>(element_count, ptr);
-        ptr += sizeof(uint16_t);
-        for (size_t i = 0; i < element_count + 1; i++) {
-            internal::write_pod(offsets[i], ptr);
-            ptr += sizeof(uint16_t);
-        }
-
-        // Phase 2: serialise new elements
-        serializer(sparse_array_writer_phase2<T, MaxElementCount>(offsets, out));
-
-        return offsets[MaxElementCount];
-    }
-
-    template<typename Serializer>
-    static size_t serialize(uint8_t* new_ptr, const uint8_t* old_ptr, Serializer&& serializer) noexcept {
-        std::bitset<MaxElementCount> overwritten;
-        std::array<uint16_t, MaxElementCount + 1> old_offsets{};
-
-        // Read offset array from old
-        size_t old_element_count = internal::read_pod<uint16_t>(old_ptr);
-        std::copy_n(old_ptr + sizeof(uint16_t), (old_element_count + 1) * sizeof(uint16_t), reinterpret_cast<uint8_t*>(old_offsets.data()));
-        auto last = old_offsets[old_element_count];
-        for (auto idx = old_element_count + 1; idx <= MaxElementCount; idx++) {
-            old_offsets[idx] = last;
-        }
-        std::array<uint16_t, MaxElementCount + 1> new_offsets = old_offsets;
-
-        // Phase 1: get offsets of all elements
-        auto new_element_count = serializer(sparse_array_writer_phase1a<T, MaxElementCount>(new_offsets, overwritten));
-
-        // Move survivors, bury the dead
-        for (size_t i = 0; i < old_element_count; i++) {
-            auto old_off = old_offsets[i];
-            auto optr = old_ptr + old_off;
-            if (overwritten[i]) {
-                // check if existed
-                methods::destroy<T>(optr);
-                continue;
-            }
-
-            auto nptr = new_ptr + new_offsets[i];
-            if (optr != nptr) {
-                auto size = old_offsets[i + 1] - old_off;
-                if (!size) {
-                    continue;
-                }
-                std::copy_n(optr, old_offsets[i + 1] - old_off, nptr);
-                methods::move<T>(nptr);
-            }
-        }
-
-        // Serialise offset array to new
-        auto ptr = new_ptr;
-        internal::write_pod<uint16_t>(new_element_count, ptr);
-        ptr += sizeof(uint16_t);
-        for (size_t i = 0; i < new_element_count + 1; i++) {
-            internal::write_pod(new_offsets[i], ptr);
-            ptr += sizeof(uint16_t);
-        }
-
-        // Phase 2: serialise new elements
-        serializer(sparse_array_writer_phase2<T, MaxElementCount>(new_offsets, new_ptr));
-        return new_offsets[MaxElementCount];
+    static size_t serialize(uint8_t* out, serialization_state& state, Serializer&& serializer) noexcept {
+        return std::forward<Serializer>(serializer)(sparse_array_writer<T, MaxElementCount>(out, state));
     }
 };
-
 
 }
 
@@ -1558,13 +1386,13 @@ template<template<class> typename Method, typename Type, size_t MaxCount>
 struct generate_method<Method, containers::sparse_array<Type, MaxCount>> {
     template<typename Context>
     static void run(const uint8_t* ptr, const Context& context) noexcept {
-        auto element_count = imr::internal::read_pod<uint16_t>(ptr);
+        auto element_count = imr::internal::read_pod<uint8_t>(ptr);
         if (!element_count) {
             return;
         }
-        auto current_offset = imr::internal::read_pod<uint16_t>(ptr + sizeof(uint16_t));
+        auto current_offset = imr::internal::read_pod<uint16_t>(ptr + sizeof(uint8_t));
         for (auto i = 0u; i < element_count; i++) {
-            auto next_offset = imr::internal::read_pod<uint16_t>(ptr + sizeof(uint16_t) * (i + 2));
+            auto next_offset = imr::internal::read_pod<uint16_t>(ptr + sizeof(uint16_t) * (i + 1) + sizeof(uint8_t));
             if (current_offset != next_offset) {
                 auto element_ptr = ptr + current_offset;
                 Method<Type>::run(element_ptr, context.template context_for_element(i, element_ptr));
