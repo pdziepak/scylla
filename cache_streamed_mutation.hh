@@ -147,6 +147,12 @@ public:
     cache_streamed_mutation(cache_streamed_mutation&&) = delete;
     virtual future<> fill_buffer() override;
     virtual ~cache_streamed_mutation() {
+        // Cache streamed mutation is created inside an allocating section.
+        // If an error happens it can be destroyed in that section, so we
+        // need to ensure that we do not enter them recursively..
+        if (!_lsa_manager.region().reclaiming_enabled()) {
+            return;
+        }
         maybe_merge_versions(_snp, _lsa_manager.region(), _lsa_manager.read_section());
     }
 };
