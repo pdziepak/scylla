@@ -295,6 +295,7 @@ scylla_tests = [
     'tests/cql_auth_syntax_test',
     'tests/querier_cache',
     'tests/querier_cache_resource_based_eviction',
+    'tests/meta_test',
 ]
 
 perf_tests = [
@@ -712,6 +713,7 @@ pure_boost_tests = set([
     'tests/auth_resource_test',
     'tests/enum_set_test',
     'tests/cql_auth_syntax_test',
+    'tests/meta_test',
 ])
 
 tests_not_using_seastar_test_framework = set([
@@ -763,6 +765,7 @@ deps['tests/allocation_strategy_test'] = ['tests/allocation_strategy_test.cc', '
 deps['tests/log_heap_test'] = ['tests/log_heap_test.cc']
 deps['tests/anchorless_list_test'] = ['tests/anchorless_list_test.cc']
 deps['tests/perf/perf_fast_forward'] += ['release.cc']
+deps['tests/meta_test'] = ['tests/meta_test.cc']
 
 warnings = [
     '-Wno-mismatched-tags',  # clang-only
