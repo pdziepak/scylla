@@ -246,6 +246,7 @@ scylla_tests = [
     'tests/vint_serialization_test',
     'tests/compress_test',
     'tests/chunked_vector_test',
+    'tests/meta_test',
 ]
 
 apps = [
@@ -632,6 +633,7 @@ pure_boost_tests = set([
     'tests/vint_serialization_test',
     'tests/compress_test',
     'tests/chunked_vector_test',
+    'tests/meta_test',
 ])
 
 tests_not_using_seastar_test_framework = set([
@@ -674,6 +676,7 @@ deps['tests/murmur_hash_test'] = ['bytes.cc', 'utils/murmur_hash.cc', 'tests/mur
 deps['tests/allocation_strategy_test'] = ['tests/allocation_strategy_test.cc', 'utils/logalloc.cc', 'utils/dynamic_bitset.cc']
 deps['tests/log_heap_test'] = ['tests/log_heap_test.cc']
 deps['tests/anchorless_list_test'] = ['tests/anchorless_list_test.cc']
+deps['tests/meta_test'] = ['tests/meta_test.cc']
 
 warnings = [
     '-Wno-mismatched-tags',  # clang-only
