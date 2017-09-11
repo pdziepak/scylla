@@ -342,23 +342,40 @@ schema::schema(const raw_schema& raw, stdx::optional<raw_view_info> raw_view_inf
         generate_row_imr_info(regular_columns()),
         generate_row_imr_info(static_columns()),
     });
-    _imr_data->lsa_regular_row_migrator
-        = std::make_unique<v2::rows_entry::lsa_migrator<imr::utils::context_factory<
-            data::row::context, data::schema_row_info>>>(imr::utils::context_factory<data::row::context,
-                                                                                     data::schema_row_info>(_imr_data->regular_row_info));
+    bool first = true;
+    _imr_data->lsa_regular_row_migrator = boost::copy_range<std::vector<std::unique_ptr<migrate_fn_type>>>(
+        _imr_data->regular_row_info | boost::adaptors::transformed([&] (const data::schema_row_info& sri) -> std::unique_ptr<migrate_fn_type> {
+            using context_factory = imr::utils::context_factory<data::row::context, data::schema_row_info>;
+            if (first) {
+                first = false;
+                return std::make_unique<v2::rows_entry::lsa_migrator<context_factory>>(context_factory(sri));
+            } else {
+                return std::make_unique<imr::utils::lsa_migrate_fn<data::row::external_chunk, context_factory>>(context_factory(sri));
+            }
+        })
+    );
 }
 
 template<typename ColumnRange>
-data::schema_row_info schema::generate_row_imr_info(ColumnRange&& columns) {
-    return data::schema_row_info(boost::copy_range<std::vector<data::type_info>>(
-        std::forward<ColumnRange>(columns) | boost::adaptors::transformed([] (const column_definition& column) {
-            if (column.type->is_fixed_size()) {
-                return data::type_info(data::type_info::fixed_size_tag(), column.type->object_size());
-            } else {
-                return data::type_info(data::type_info::variable_size_tag());
-            }
+std::vector<data::schema_row_info> schema::generate_row_imr_info(ColumnRange&& columns) {
+    auto column_count = boost::size(columns);
+    return boost::copy_range<std::vector<data::schema_row_info>>(
+        boost::irange<size_t>(0, (column_count + data::row::max_cell_count - 1) / data::row::max_cell_count)
+        | boost::adaptors::transformed([&columns, column_count] (size_t n) {
+            auto start = n * data::row::max_cell_count;
+            return data::schema_row_info(boost::copy_range<std::vector<data::type_info>>(
+                columns
+                | boost::adaptors::sliced(start, std::min(start + data::row::max_cell_count, column_count))
+                | boost::adaptors::transformed([] (const column_definition& column) {
+                    if (column.type->is_fixed_size()) {
+                        return data::type_info(data::type_info::fixed_size_tag(), column.type->object_size());
+                    } else {
+                        return data::type_info(data::type_info::variable_size_tag());
+                    }
+                })
+            ));
         })
-    ));
+    );
 }
 
 schema::schema(std::experimental::optional<utils::UUID> id,

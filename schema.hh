@@ -484,25 +484,25 @@ private:
     column_mapping _column_mapping;
 
     struct imr_data {
-        data::schema_row_info regular_row_info;
-        data::schema_row_info static_row_info;
-        std::unique_ptr<migrate_fn_type> lsa_regular_row_migrator;
+        std::vector<data::schema_row_info> regular_row_info;
+        std::vector<data::schema_row_info> static_row_info;
+        std::vector<std::unique_ptr<migrate_fn_type>> lsa_regular_row_migrator;
     };
     // FIXME: This is bad. A lot of indirection in order to access IMR-related
     // stuff when starting with schema_ptr.
     lw_shared_ptr<imr_data> _imr_data;
 
     template<typename ColumnRange>
-    static data::schema_row_info generate_row_imr_info(ColumnRange&&);
+    static std::vector<data::schema_row_info> generate_row_imr_info(ColumnRange&&);
 public:
-    const data::schema_row_info& regular_row_imr_info() const noexcept {
+    const std::vector<data::schema_row_info>& regular_row_imr_info() const noexcept {
         return _imr_data->regular_row_info;
     }
-    const data::schema_row_info& static_row_imr_info() const noexcept {
+    const std::vector<data::schema_row_info>& static_row_imr_info() const noexcept {
         return _imr_data->static_row_info;
     }
-    allocation_strategy::migrate_fn lsa_regular_row_migrator() const noexcept {
-        return _imr_data->lsa_regular_row_migrator.get();
+    const std::vector<std::unique_ptr<migrate_fn_type>>& lsa_regular_row_migrators() const noexcept {
+        return _imr_data->lsa_regular_row_migrator;
     }
 
     friend class schema_builder;

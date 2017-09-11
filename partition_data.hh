@@ -432,79 +432,131 @@ struct row {
     using cell_array = imr::containers::sparse_array<cell::structure, max_cell_count>;
 
     using external_chunk = imr::structure<
-        imr::member<tags::next, imr::fixed_size_value<void*>>,
-        imr::member<tags::prev, imr::fixed_size_value<void*>>,
+        imr::member<tags::next, imr::tagged_type<tags::next, imr::fixed_size_value<void*>>>,
+        imr::member<tags::prev, imr::tagged_type<tags::prev, imr::fixed_size_value<void*>>>,
         imr::member<tags::cells, cell_array>
     >;
 
     using structure = imr::structure<
-        imr::member<tags::next, imr::fixed_size_value<void*>>,
+        imr::member<tags::next, imr::tagged_type<tags::next, imr::fixed_size_value<void*>>>,
         imr::member<tags::cells, cell_array>
     >;
 
     using serialization_state = cell_array::serialization_state;
 
-    template<typename Writer, typename... Args>
-    static size_t size_of(serialization_state& state, Writer&& writer, Args&&... args) {
-        return structure::size_when_serialized([&writer, &state, &args...] (auto serializer) {
-            return serializer
-                .serialize(nullptr)
-                .serialize(state, [&writer, &args...] (auto array_sizer) {
-                    return writer(row_builder<decltype(array_sizer)>(array_sizer), std::forward<Args>(args)...);
-                }).done();
+    class builder_state {
+        std::deque<serialization_state> _state;
+    public:
+        serialization_state& get(size_t idx) { // split by phase
+            if (_state.size() <= idx) {
+                _state.resize(idx + 1);
+            }
+            return _state[idx];
+        }
+    };
+
+    template<typename Writer, typename Allocator, typename... Args>
+    static size_t size_of(builder_state& state, const std::vector<std::unique_ptr<migrate_fn_type>>& lsa_migrators, Writer&& writer, Allocator& allocator, Args&&... args) {
+        return structure::size_when_serialized([&] (auto serializer) {
+            imr::placeholder<imr::fixed_size_value<void*>> next;
+            auto ptr = serializer.position();
+            auto array_sizer = serializer
+                .serialize(next)
+                .serialize_nested(state.get(0));
+            return writer(row_builder<decltype(array_sizer), Allocator>(array_sizer, allocator, state, next, ptr, lsa_migrators), allocator, std::forward<Args>(args)...);
         });
     }
 
-    template<typename Writer, typename... Args>
-    static size_t serialize(uint8_t* ptr, serialization_state& state, Writer&& writer, Args&&... args) {
-        return structure::serialize(ptr, [&writer, &state, &args...] (auto serializer) {
-            return serializer
-                .serialize(nullptr)
-                .serialize(state, [&writer, &args...] (auto array_serializer) {
-                    return writer(row_builder<decltype(array_serializer)>(array_serializer), std::forward<Args>(args)...);
-                }).done();
+    template<typename Writer, typename Allocator, typename... Args>
+    static size_t serialize(uint8_t* ptr, builder_state& state, const std::vector<std::unique_ptr<migrate_fn_type>>& lsa_migrators, Writer&& writer, Allocator& allocator, Args&&... args) {
+        return structure::serialize(ptr, [&] (auto serializer) {
+            imr::placeholder<imr::fixed_size_value<void*>> next;
+            auto ptr = serializer.position();
+            auto array_writer = serializer
+                .serialize(next)
+                .serialize_nested(state.get(0));
+            return writer(row_builder<decltype(array_writer), Allocator>(array_writer, allocator, state, next, ptr, lsa_migrators), allocator, std::forward<Args>(args)...);
         });
     }
 
-    template<typename Writer>//, typename Allocator>
-    class row_builder {
-        Writer _writer;
-        //stx::optional<typename Allocator::wrapped<Writer>> _fragment_writer;
-        //Allocator _allocator;
-        //column_id _max_id;
-       // imr::placeholder<imr::fixed_size_value<void*>> _next;
-    /*private:
+
+    // is there any reason to make Allocator a template parameter?
+    template<typename Writer, typename Allocator>
+    class row_builder { // just builder
+        const std::vector<std::unique_ptr<migrate_fn_type>>* _lsa_migrators;
+        void* _original_pointer;
+        using array_writer_type = imr::rehook<Writer, imr::noop_done_hook>;
+
+        Writer _original_writer;
+        array_writer_type _writer;
+
+        using external_writer_type = decltype(std::declval<Allocator>().template allocate_nested<external_chunk>(nullptr).serialize(nullptr).serialize(nullptr).serialize_nested(std::declval<serialization_state&>()));
+        stdx::optional<external_writer_type> _fragment_writer;
+
+        Allocator& _allocator;
+        size_t _max_id = max_cell_count;
+        builder_state& _state;
+        imr::placeholder<imr::fixed_size_value<void*>> _next;
+    private:
         void advance_to_fragment(size_t id) {
             imr::placeholder<imr::fixed_size_value<void*>> nxt;
-            while (id <= _max_id) {
-                _max_id += max_cell_count;
-                auto ptr = _writer.done().done();
-                _next.serialize(ptr);
-                _writer = _allocator.allocate2<external_chunk>(_schema.row_lsa_migrator[_max_id / max_cell_count])
+            while (id >= _max_id) {
+                void* ptr = nullptr;
+                if (_fragment_writer) {
+                    _fragment_writer->internal_state() = std::move(_writer.internal_state());
+                    ptr = _fragment_writer->done().done();
+                } else {
+                    _original_writer.internal_state() = std::move(_writer.internal_state());
+                    ptr = _original_pointer;
+                }
+                auto ser = _allocator.template allocate_nested<external_chunk>((*_lsa_migrators)[_max_id / max_cell_count].get());
+                auto& state = _state.get(_max_id / max_cell_count);
+                _next.serialize(ser.position());
+                _fragment_writer = ser
                         .serialize(_next)
                         .serialize(ptr)
-                        .serialize_sparse_array();
+                        .serialize_nested(state);
+
+                _writer = array_writer_type(std::move(_fragment_writer->internal_state()), imr::noop_done_hook());
+                _max_id += max_cell_count;
             }
-        }*/
+        }
     public:
-        explicit row_builder(Writer wr) : _writer(wr) { }
+        explicit row_builder(Writer wr, Allocator& allocator, builder_state& state, imr::placeholder<imr::fixed_size_value<void*>> nxt, void* orig_ptr,
+                             const std::vector<std::unique_ptr<migrate_fn_type>>& lsa_migrators)
+            : _lsa_migrators(&lsa_migrators)
+            , _original_pointer(orig_ptr)
+            , _original_writer(std::move(wr))
+            , _writer(std::move(_original_writer.internal_state()), imr::noop_done_hook())
+            , _allocator(allocator)
+            , _state(state)
+            , _next(nxt)
+        { }
 
         template<typename... Args>
         row_builder& set_live_cell(size_t id, Args&&... args) {
-           // if (id >= _max_id) {
-           //     advance_to_fragment(id);
-           // }
-            _writer.emplace(id, std::forward<Args>(args)...);
+            if (id >= _max_id) {
+                advance_to_fragment(id);
+            }
+            assert(id - (_max_id - max_cell_count) < max_cell_count);
+            _writer.emplace(id - (_max_id - max_cell_count), std::forward<Args>(args)...);
             return *this;
         }
 
         auto done() noexcept {
-         //   _next.serialize(nullptr);
-            return _writer.done();
+            _next.serialize(nullptr);
+            if (_fragment_writer) {
+                _fragment_writer->internal_state() = std::move(_writer.internal_state());
+                _fragment_writer->done().done();
+                return _original_writer.done().done();
+            } else {
+                _original_writer.internal_state() = std::move(_writer.internal_state());
+                return _original_writer.done().done();
+            }
         }
     };
 
-    class context {
+    class context { // this is row_chunk context
         const schema_row_info* _sri;
     public:
         explicit context(const schema_row_info& sri) : _sri(&sri) { }
@@ -520,37 +572,136 @@ struct row {
         }
     };
 
-    static void destroy(const schema_row_info& sri, const uint8_t* ptr) {
-        context ctx(sri);
+    // merge both contexts?
+    struct destructor_context {
+        std::vector<data::schema_row_info>::const_iterator _current;
+    private:
+        explicit destructor_context(std::vector<data::schema_row_info>::const_iterator it)
+            : _current(it) { }
+    public:
+        explicit destructor_context(const std::vector<schema_row_info>& sri)
+            : _current(sri.begin()) { }
+
+        destructor_context next() const noexcept {
+            return destructor_context(std::next(_current));
+        }
+
+        auto context_for_element(size_t id, const uint8_t* ptr) const noexcept {
+            return cell::context(cell::structure::get_first_member(ptr), _current->type_info_for(id));
+        }
+
+        template<typename Tag>
+        decltype(auto) context_for(...) const noexcept {
+            return *this;
+        }
+    };
+
+    static void destroy(const std::vector<schema_row_info>& sri, const uint8_t* ptr) {
+        destructor_context ctx(sri);
         imr::methods::destroy<structure>(ptr, ctx);
     }
 
+
+    struct chunk {
+        size_t _id_offset;
+        row::context _context;
+        cell_array::view _cells;
+    public:
+        chunk(size_t id_offset, row::context ctx, cell_array::view v) noexcept
+                : _id_offset(id_offset), _context(ctx), _cells(v) { }
+
+        auto cells() const noexcept {
+            return _cells.elements_range(_context) | boost::adaptors::transformed([this] (auto&& element) {
+                // TODO: cell::view from cell::structure::view
+                auto id = element.first;
+                auto& view = element.second;
+                return std::make_pair(id + _id_offset, cell::view(_context.context_for_element(id, view.raw_pointer()), view));
+            });
+        }
+    };
+
+    class iterator {
+        static_assert(std::is_trivially_destructible<chunk>::value, "");
+    private:
+        const std::vector<schema_row_info>* _sri;
+        row::context _context;
+        size_t _index = 0;
+        const uint8_t* _current;
+
+        union data {
+            data() { }
+            ~data() { }
+
+            chunk chk;
+        } _data;
+    public:
+        iterator() = default;
+        iterator(const std::vector<schema_row_info>& sri, const void* pointer)
+            : _sri(&sri), _context(sri[0]), _current(static_cast<const uint8_t*>(pointer))
+        {
+            if (_current) {
+                new (&_data.chk) chunk(0, _context, structure::get_member<1>(_current, _context));
+            }
+        }
+
+        const chunk& operator*() const noexcept {
+            return _data.chk;
+        }
+        const chunk* operator->() const noexcept {
+            return &_data.chk;
+        }
+
+        iterator& operator++() noexcept {
+            auto next_v = external_chunk::get_member<0>(_current);
+            _current = static_cast<const uint8_t*>(next_v.load());
+            _index++;
+            if (_current) {
+                _context = row::context((*_sri)[_index]);
+                new (&_data.chk) chunk(_index * max_cell_count, _context, external_chunk::get_member<2>(_current, _context));
+            }
+            return *this;
+        }
+        iterator operator++(int) noexcept {
+            auto it = *this;
+            operator++();
+            return it;
+        }
+
+        bool operator==(const iterator& other) const {
+            return _current == other._current;
+        }
+        bool operator!=(const iterator& other) const {
+            return !(*this == other);
+        }
+    };
+
     struct view {
+        const std::vector<schema_row_info>* _sri;
         row::context _context;
         structure::view _view;
     public:
-        explicit view(const uint8_t* ptr, const schema_row_info& sri)
-            : view(ptr, row::context(sri)) { }
+        explicit view(const uint8_t* ptr, const std::vector<schema_row_info>& sri)
+            : _sri(&sri), _context(row::context(sri[0])), _view(structure::make_view(ptr, _context)) { }
 
-        explicit view(const uint8_t* ptr, const row::context& ctx)
-            : _context(ctx), _view(structure::make_view(ptr, _context)) { }
-
-        explicit view(structure::view view, const schema_row_info& sri)
-            : _context(sri), _view(view) { }
-
-        explicit view(structure::view view, const row::context& ctx)
-            : _context(ctx), _view(view) { }
-
+        explicit view(structure::view view, const std::vector<schema_row_info>& sri)
+            : _sri(&sri), _context(sri[0]), _view(view) { }
 
         const row::context& context() const noexcept { return _context; }
 
         auto cells() const {
             return _view.get<tags::cells>().elements_range(_context) | boost::adaptors::transformed([this] (auto&& element) {
-                // TODO: cell::view from cell::structure::view
+
                 auto id = element.first;
                 auto& view = element.second;
                 return std::make_pair(id, cell::view(_context.context_for_element(id, view.raw_pointer()), view));
             });
+        }
+
+        auto begin() const {
+            return iterator(*_sri, _view.raw_pointer());
+        }
+        auto end() const {
+            return iterator(*_sri, nullptr);
         }
 
         bool empty() const {
@@ -558,8 +709,19 @@ struct row {
         }
     };
 
-    static view make_view(const schema_row_info& sri, const uint8_t* ptr) {
+    static view make_view(const std::vector<schema_row_info>& sri, const uint8_t* ptr) {
         return view(ptr, sri);
+    }
+
+
+    // replace with a range of chunks?
+    template<typename Function>
+    static void for_each(const view& v, Function&& fn) {
+        for (auto&& chk : v) {
+            for (auto&& cell : chk.cells()) {
+                fn(cell);
+            }
+        }
     }
 };
 
@@ -598,7 +760,7 @@ struct destructor<data::cell::variable_value> {
             len = data::cell::external_chunk::serialized_object_size(chk, data::cell::chunk_context(chk));
             imr::methods::destroy<data::cell::external_chunk>(static_cast<const uint8_t*>(ptr_view.load()), ctx);
         }
-        current_allocator().free(ptr_view.load(), len); // don't make me probvide this, ask the migrator
+        current_allocator().free(ptr_view.load(), len + 7); // don't make me probvide this, ask the migrator
     }
 };
 
@@ -640,7 +802,7 @@ struct destructor<data::cell::external_chunk> {
             len = data::cell::external_chunk::serialized_object_size(chk, data::cell::chunk_context(chk));
             imr::methods::destroy<data::cell::external_chunk>(static_cast<const uint8_t*>(ptr_view.load()), ctx);
         }
-        current_allocator().free(ptr_view.load(), len); // don't make me probvide this, ask the migrator
+        current_allocator().free(ptr_view.load(), len + 7); // don't make me probvide this, ask the migrator
     }
 };
 
@@ -656,6 +818,42 @@ struct mover<data::cell::external_chunk> {
         auto back_ptr = static_cast<uint8_t*>(echk_view.get<data::cell::tags::chunk_back_pointer>().load());
         auto nptr = imr::fixed_size_value<void*>::make_view(back_ptr);
         nptr.store(const_cast<uint8_t*>(ptr));
+    }
+};
+
+template<>
+struct destructor<imr::tagged_type<data::row::tags::next, imr::fixed_size_value<void*>>> {
+    static void run(const uint8_t* ptr, data::row::destructor_context ctx) {
+        auto next_v = data::row::external_chunk::get_member<0>(ptr);
+        auto next = static_cast<const uint8_t*>(next_v.load());
+        if (next) {
+            auto nctx = ctx.next();
+            auto length = data::row::external_chunk::serialized_object_size(next, nctx) + 7;
+            imr::methods::destroy<data::row::external_chunk>(next, nctx);
+            current_allocator().free(const_cast<void*>(static_cast<const void*>(next)), length);
+        }
+    }
+};
+
+template<>
+struct mover<imr::tagged_type<data::row::tags::next, imr::fixed_size_value<void*>>> {
+    static void run(const uint8_t* ptr, ...) {
+        auto next_v = imr::fixed_size_value<void*>::make_view(ptr);
+        auto next = static_cast<uint8_t*>(next_v.load());
+        if (next) {
+            auto pointee = data::row::external_chunk::get_member<1>(next);
+            pointee.store((void*)ptr);
+        }
+    }
+};
+
+template<>
+struct mover<imr::tagged_type<data::row::tags::prev, imr::fixed_size_value<void*>>> {
+    static void run(const uint8_t* ptr, ...) {
+        auto prev_v = imr::fixed_size_value<void*>::make_view(ptr);
+        auto prev = static_cast<uint8_t*>(prev_v.load());
+        auto pointee = data::row::external_chunk::get_member<0>(prev);
+        pointee.store((uint8_t*)ptr - 8 /* static offset_of member*/);
     }
 };
 

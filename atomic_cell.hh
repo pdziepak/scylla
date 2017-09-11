@@ -57,6 +57,9 @@ struct ac_cell_context {
     ac_imr_flags::view _flags;
 
     template<typename Tag>
+    auto context_for(...) const noexcept { return *this; }
+
+    template<typename Tag>
     inline bool is_present() const noexcept;
 
     template<typename Tag>
@@ -104,6 +107,9 @@ struct ac_value_context {
     size_t size_of() const noexcept {
         return _size;
     }
+
+    template<typename Tag>
+    auto context_for(...) const noexcept { return *this; }
 };
 
 class atomic_cell_type final {

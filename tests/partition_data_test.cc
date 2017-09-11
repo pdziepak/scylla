@@ -37,6 +37,10 @@
 
 #include "disk-error-handler.hh"
 
+
+#include "schema_builder.hh"
+#include "mutation_partition2.hh"
+
 thread_local disk_error_signal_type commit_error;
 thread_local disk_error_signal_type general_disk_error;
 
@@ -117,7 +121,8 @@ BOOST_AUTO_TEST_CASE(test_live_cell_creation) {
 }
 
 BOOST_AUTO_TEST_CASE(test_row) {
-    std::uniform_int_distribution<size_t> cell_count_dist(1, data::row::max_cell_count);
+    std::uniform_int_distribution<size_t> cell_count_dist(1, data::row::max_cell_count * 3);
+        // test for all cell count from 1 to max * 4
     std::uniform_int_distribution<size_t> length_dist(0, data::cell::maximum_internal_storage_length * 2);
 
     for (auto i : boost::irange(0, random_test_iteration_count)) {
@@ -126,7 +131,7 @@ BOOST_AUTO_TEST_CASE(test_row) {
         imr::utils::external_object_allocator allocator;
 
         auto cell_count = cell_count_dist(gen);
-        std::vector<column_id> ids(data::row::max_cell_count);
+        std::vector<column_id> ids(data::row::max_cell_count * 3);
         boost::range::iota(ids, 0);
         boost::range::random_shuffle(ids);
         ids.erase(ids.begin() + cell_count, ids.end());
@@ -136,31 +141,53 @@ BOOST_AUTO_TEST_CASE(test_row) {
         std::generate_n(std::back_inserter(cells), cell_count, [&] {
             return std::make_pair(random_bytes(length_dist(gen)), random_int<api::timestamp_type>());
         });
-        auto sri = data::schema_row_info(boost::copy_range<std::vector<data::type_info>>(
-            boost::irange<unsigned>(0, ids.back() + 1) | boost::adaptors::transformed([&] (auto id) {
-                if (random_bool()) {
-                    auto it = boost::find(ids, id);
-                    if (it != ids.end()) {
-                        return data::type_info(data::type_info::fixed_size_tag(), cells[std::distance(ids.begin(), it)].first.size());
-                    } else {
-                        return data::type_info(data::type_info::fixed_size_tag(), random_int<uint8_t>());
-                    }
+        auto sri = boost::copy_range<std::vector<data::schema_row_info>>(
+            boost::irange<size_t>(0, (ids.back() + data::row::max_cell_count) / data::row::max_cell_count)
+            | boost::adaptors::transformed([&] (auto idx) {
+                auto start = idx * data::row::max_cell_count;
+                auto end = std::min<size_t>(ids.back() + 1, start + data::row::max_cell_count);
+                return data::schema_row_info(boost::copy_range<std::vector<data::type_info>>(
+                    boost::irange<unsigned>(start, end)
+                    | boost::adaptors::transformed([&] (auto id) {
+                        if (random_bool()) {
+                            auto it = boost::find(ids, id);
+                            if (it != ids.end()) {
+                                return data::type_info(data::type_info::fixed_size_tag(), cells[std::distance(ids.begin(), it)].first.size());
+                            } else {
+                                return data::type_info(data::type_info::fixed_size_tag(), random_int<uint8_t>());
+                            }
+                        } else {
+                            return data::type_info(data::type_info::variable_size_tag());
+                        }
+                    })
+                ));
+            })
+        );
+        bool first = true;
+        auto lsa_migrators = boost::copy_range<std::vector<std::unique_ptr<migrate_fn_type>>>(
+            sri | boost::adaptors::transformed([&] (const data::schema_row_info& sri) -> std::unique_ptr<migrate_fn_type> {
+                using context_factory = imr::utils::context_factory<data::row::context, data::schema_row_info>;
+                if (first) {
+                    first = false;
+                    return std::make_unique<v2::rows_entry::lsa_migrator<context_factory>>(context_factory(sri));
                 } else {
-                    return data::type_info(data::type_info::variable_size_tag());
+                    return std::make_unique<imr::utils::lsa_migrate_fn<data::row::external_chunk, context_factory>>(context_factory(sri));
                 }
             })
-        ));
+        );
 
         auto writer = [&] (auto sizer, auto allocator) {
             for (auto i = 0u; i < cell_count; i++) {
-                sizer.set_live_cell(ids[i], data::cell::make_live(sri.type_info_for(ids[i]), cells[i].second, cells[i].first), allocator);
+                auto id = ids[i];
+                sizer.set_live_cell(ids[i], data::cell::make_live(sri[id / data::row::max_cell_count].type_info_for(id % data::row::max_cell_count), cells[i].second, cells[i].first), allocator);
             }
             return sizer.done();
         };
 
         // Phase 1: determine sizes of all objects
-        data::row::serialization_state state;
-        auto expected_size = data::row::size_of(state, writer, allocator.get_sizer());
+        data::row::builder_state state;
+        auto aszr = allocator.get_sizer();
+        auto expected_size = data::row::size_of(state, lsa_migrators, writer, aszr);
         BOOST_TEST_MESSAGE("row size: " << expected_size);
 
         // Phase 2: allocate necessary buffers
@@ -168,26 +195,23 @@ BOOST_AUTO_TEST_CASE(test_row) {
         allocator.allocate_all();
 
         // Phase 3: serialise objects
-        BOOST_CHECK_EQUAL(data::row::serialize(buffer.get(), state, writer, allocator.get_serializer()), expected_size);
+        auto aser = allocator.get_serializer();
+        BOOST_CHECK_EQUAL(data::row::serialize(buffer.get(), state, lsa_migrators, writer, aser), expected_size);
 
         auto view = data::row::make_view(sri, buffer.get());
         size_t idx = 0;
-        for (auto&& i_a_c : view.cells()) {
+        data::row::for_each(view, [&] (auto&& i_a_c) {
             BOOST_CHECK_EQUAL(ids[idx], i_a_c.first);
             BOOST_CHECK_EQUAL(cells[idx].second, i_a_c.second.timestamp());
             BOOST_CHECK(boost::equal(cells[idx].first, i_a_c.second.value()));
             idx++;
-        }
+        });
         BOOST_CHECK_EQUAL(idx, cell_count);
 
         data::row::destroy(sri, buffer.get());
     }
 }
 
-// another test suite
-
-#include "schema_builder.hh"
-#include "mutation_partition2.hh"
 
 BOOST_AUTO_TEST_CASE(test_rows_entry) {
     auto s = schema_builder("ks", "cf")
@@ -412,6 +436,7 @@ BOOST_AUTO_TEST_CASE(test_rows_entry_lsa) {
         intrusive_set_external_comparator<v2::rows_entry_header, &v2::rows_entry_header::_link> tree;
         tree.insert_before(tree.end(), *re.release());
 
+        BOOST_TEST_MESSAGE("starting full compaction...");
         lsa.full_compaction();
         BOOST_TEST_MESSAGE("full compaction completed");
 

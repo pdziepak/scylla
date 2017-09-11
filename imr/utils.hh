@@ -74,7 +74,7 @@ public:
 
     virtual size_t size(const void* obj_ptr) const noexcept override {
         auto ptr = static_cast<const uint8_t*>(obj_ptr);
-        return Structure::serialized_object_size(ptr, _context_factory.create(ptr));
+        return Structure::serialized_object_size(ptr, _context_factory.create(ptr)) + 7;
     }
 };
 
@@ -96,31 +96,50 @@ class external_object_allocator {
                 : _request(std::make_pair(n, fn)) { }
 
         void allocate() {
-            auto ptr = current_allocator().alloc(_request.second, _request.first, 1);
+            auto ptr = current_allocator().alloc(_request.second, _request.first + 7, 1);
             _object = std::make_pair(_request.first, ptr);
         }
 
         void free() noexcept {
-            current_allocator().free(_object.second, _object.first);
+            current_allocator().free(_object.second, _object.first + 7);
+        }
+
+        void set(size_t n, allocation_strategy::migrate_fn fn) noexcept {
+            _request = std::make_pair(n, fn);
         }
 
         void* pointer() const noexcept { return _object.second; }
+
+        size_t size() const noexcept { return _object.first; }
     };
     std::deque<allocation> _allocations; // clustered list?
+    bool _failed = false;
     size_t _position = 0;
 private:
-    void reserve(size_t n, allocation_strategy::migrate_fn migrate) {
-        _allocations.emplace_back(n, migrate);
+    size_t reserve(size_t n, allocation_strategy::migrate_fn migrate) noexcept {
+        auto i = _allocations.size();
+        try {
+            _allocations.emplace_back(n, migrate);
+        } catch (...) {
+            _failed = true;
+        }
+        return i;
     }
-    uint8_t* get_next() {
+    void set(size_t i, size_t n, allocation_strategy::migrate_fn migrate) noexcept {
+        if (!_failed) {
+            _allocations[i].set(n, migrate);
+        }
+    }
+    uint8_t* get() noexcept {
         return static_cast<uint8_t*>(_allocations[_position++].pointer());
     }
 public:
-    // TODO: split phases into two types to enforce correctness
-
-    size_t requested_allocations_count() const { return _allocations.size(); }
+    size_t requested_allocations_count() const noexcept { return _allocations.size(); }
 
     void allocate_all() {
+        if (_failed) {
+            throw std::bad_alloc();
+        }
         auto it = _allocations.begin();
         try {
             // TODO: send batch of allocations to the allocation strategy and
@@ -141,33 +160,66 @@ public:
     class sizer {
         external_object_allocator& _parent;
     public:
+        class hook {
+            external_object_allocator* _parent;
+            size_t _idx;
+            migrate_fn_type* _migrate_fn;
+        public:
+            hook(external_object_allocator& parent, size_t idx, migrate_fn_type* migrate_fn)
+                : _parent(&parent), _idx(idx), _migrate_fn(migrate_fn) { }
+
+            void* done(size_t size) noexcept {
+                _parent->set(_idx, size, _migrate_fn);
+                return nullptr;
+            }
+        };
+    public:
         explicit sizer(external_object_allocator& parent) noexcept
-                : _parent(parent) { }
+            : _parent(parent) { }
 
         template<typename T, typename... Args>
-        uint8_t* allocate(Args&& ... args) {
+        uint8_t* allocate(Args&& ... args) noexcept {
             auto size = T::size_when_serialized(std::forward<Args>(args)...);
             _parent.reserve(size, &default_lsa_migrate_fn<T>::migrate_fn);
             return nullptr;
         }
 
         template<typename T, typename... Args>
-        uint8_t* allocate2(migrate_fn_type* migrate_fn, Args&& ... args) {
+        uint8_t* allocate2(migrate_fn_type* migrate_fn, Args&& ... args) noexcept {
             auto size = T::size_when_serialized(std::forward<Args>(args)...);
             _parent.reserve(size, migrate_fn);
             return nullptr;
         }
+
+        template<typename T>
+        auto allocate_nested(migrate_fn_type* migrate_fn) noexcept {
+            auto n = _parent.reserve(0, nullptr);
+            return T::size_when_serialized_nested(hook(_parent, n, migrate_fn));
+        }
     };
+
+
 
     class serializer {
         external_object_allocator& _parent;
+    public:
+        class hook {
+            void* _ptr;
+        public:
+            explicit hook(void* ptr)
+                    : _ptr(ptr) { }
+
+            void* done(uint8_t*) noexcept {
+                return _ptr;
+            }
+        };
     public:
         explicit serializer(external_object_allocator& parent) noexcept
             : _parent(parent) { }
 
         template<typename T, typename... Args>
         uint8_t* allocate(Args&& ... args) noexcept {
-            auto ptr = _parent.get_next();
+            auto ptr = _parent.get();//_position++);
             T::serialize(ptr, std::forward<Args>(args)...);
             return ptr;
         }
@@ -175,6 +227,12 @@ public:
         template<typename T, typename... Args>
         uint8_t* allocate2(migrate_fn_type* migrate_fn, Args&& ... args) noexcept {
             return allocate<T>(std::forward<Args>(args)...);
+        }
+
+        template<typename T>
+        auto allocate_nested(migrate_fn_type*) noexcept {
+            auto ptr = _parent.get();
+            return T::serialize_nested(hook(ptr), ptr);
         }
     };
 
@@ -240,7 +298,7 @@ public:
         virtual size_t size(const void* obj_ptr) const noexcept override {
             auto obj = static_cast<const object_with_header*>(obj_ptr);
             return sizeof(object_with_header) + Structure::serialized_object_size(obj->imr_data(),
-                                                                                  _context_factory.create(obj->imr_data()));
+                                                                                  _context_factory.create(obj->imr_data())) + 7;
         }
     };
 private:
@@ -252,12 +310,12 @@ public:
                                       allocation_strategy::migrate_fn migrate = &_lsa_migrator) {
         external_object_allocator allocator;
         auto obj_size = Structure::size_when_serialized(obj, allocator.get_sizer());
-        auto ptr = current_allocator().alloc(migrate, sizeof(Header) + obj_size, alignof(Header));
+        auto ptr = current_allocator().alloc(migrate, sizeof(Header) + obj_size + 7, alignof(Header));
         try {
             // RAII to protect ptr
             allocator.allocate_all();
         } catch (...) {
-            current_allocator().free(ptr, sizeof(Header) + obj_size);
+            current_allocator().free(ptr, sizeof(Header) + obj_size + 7);
             throw;
         }
         auto owh = new (ptr) object_with_header(std::forward<HeaderArg>(hdr));
@@ -271,7 +329,7 @@ public:
         // FIXME: don't do this if not needed (ask allocation strategy)
         auto size = Structure::serialized_object_size(object->imr_data(), context);
         object->~object_with_header();
-        current_allocator().free(object, sizeof(Header) + size);
+        current_allocator().free(object, sizeof(Header) + size + 7);
     }
 };
 

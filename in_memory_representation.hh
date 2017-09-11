@@ -779,123 +779,169 @@ public:
 template<typename Tag, typename... Types>
 using variant_member = member<Tag, variant<Tag, Types...>>;
 
-template<typename... Members>
-class structure_sizer {
+struct noop_done_hook {
+    template<typename T>
+    static T done(T value) noexcept {
+        return value;
+    }
+};
+
+template<typename Hook, typename... Members>
+class structure_sizer : Hook {
     size_t _size;
 public:
-    explicit structure_sizer(size_t size) noexcept : _size(size) { }
+    explicit structure_sizer(size_t size, Hook&& hook) noexcept
+        : Hook(std::move(hook)), _size(size) { }
 
     uint8_t* position() const noexcept { return nullptr; }
 
-    size_t done() noexcept { return _size; }
+    auto done() noexcept { return Hook::done(_size); }
 };
 
-template<typename Member, typename... Members>
-class structure_sizer<Member, Members...> {
+template<typename Hook, typename Member, typename... Members>
+class structure_sizer<Hook, Member, Members...> : Hook {
+    class nested_hook : Hook {
+        size_t _size;
+    public:
+        explicit nested_hook(size_t size, Hook&& hook) noexcept
+            : Hook(std::move(hook)), _size(size) { }
+
+        structure_sizer<Hook, Members...> done(size_t size) noexcept {
+            return structure_sizer<Hook, Members...>(size + _size, std::move(*static_cast<Hook*>(this)));
+        }
+    };
+private:
     size_t _size;
 public:
-    explicit structure_sizer(size_t size) noexcept : _size(size) { }
+    explicit structure_sizer(size_t size, Hook&& hook) noexcept
+        : Hook(std::move(hook)), _size(size) { }
 
     uint8_t* position() const noexcept { return nullptr; }
 
     template<typename... Args>
-    structure_sizer<Members...> serialize(Args&&... args) noexcept {
+    structure_sizer<Hook, Members...> serialize(Args&&... args) noexcept {
         auto size = Member::type::size_when_serialized(std::forward<Args>(args)...);
-        return structure_sizer<Members...>(size + _size);
+        return structure_sizer<Hook, Members...>(size + _size, std::move(*static_cast<Hook*>(this)));
+    }
+
+    template<typename... Args>
+    auto serialize_nested(Args&&... args) noexcept {
+        return Member::type::get_sizer(nested_hook(_size, std::move(*static_cast<Hook*>(this))), std::forward<Args>(args)...);
     }
 };
 
-template<typename Tag, typename Type, typename... Members>
-class structure_sizer<optional_member<Tag, Type>, Members...> {
+template<typename Hook, typename Tag, typename Type, typename... Members>
+class structure_sizer<Hook, optional_member<Tag, Type>, Members...> : Hook {
     size_t _size;
 public:
-    explicit structure_sizer(size_t size) noexcept : _size(size) { }
+    explicit structure_sizer(size_t size, Hook&& hook) noexcept
+        : Hook(std::move(hook)), _size(size) { }
 
     uint8_t* position() const noexcept { return nullptr; }
 
     template<typename... Args>
-    structure_sizer<Members...> serialize(Args&&... args) noexcept {
+    structure_sizer<Hook, Members...> serialize(Args&&... args) noexcept {
         auto size = Type::size_when_serialized(std::forward<Args>(args)...);
-        return structure_sizer<Members...>(size + _size);
+        return structure_sizer<Hook, Members...>(size + _size, std::move(*static_cast<Hook*>(this)));
     }
 
-    structure_sizer<Members...> skip() noexcept {
-        return structure_sizer<Members...>(_size);
+    structure_sizer<Hook, Members...> skip() noexcept {
+        return structure_sizer<Hook, Members...>(_size, std::move(*static_cast<Hook*>(this)));
     }
 };
 
-template<typename Tag, typename... Types, typename... Members>
-class structure_sizer<variant_member<Tag, Types...>, Members...> {
+template<typename Hook, typename Tag, typename... Types, typename... Members>
+class structure_sizer<Hook, variant_member<Tag, Types...>, Members...> : Hook {
     size_t _size;
 public:
-    explicit structure_sizer(size_t size) noexcept : _size(size) { }
+    explicit structure_sizer(size_t size, Hook&& hook) noexcept
+        : Hook(std::move(hook)), _size(size) { }
 
     uint8_t* position() const noexcept { return nullptr; }
 
     template<typename AlternativeTag, typename... Args>
-    structure_sizer<Members...> serialize_as(Args&&... args) noexcept {
+    structure_sizer<Hook, Members...> serialize_as(Args&&... args) noexcept {
         using type = variant<Tag, Types...>;
         auto size = type::template size_when_serialized<AlternativeTag>(std::forward<Args>(args)...);
-        return structure_sizer<Members...>(size + _size);
+        return structure_sizer<Hook, Members...>(size + _size, std::move(*static_cast<Hook*>(this)));
     }
 };
 
-template<typename... Members>
-struct structure_serializer {
+template<typename Hook, typename... Members>
+struct structure_serializer : Hook {
     uint8_t* _out;
 public:
-    explicit structure_serializer(uint8_t* out) noexcept : _out(out) { }
+    explicit structure_serializer(uint8_t* out, Hook&& hook) noexcept
+        : Hook(std::move(hook)), _out(out) { }
     uint8_t* position() const noexcept { return _out; }
-    uint8_t* done() noexcept { return _out; }
+    auto done() noexcept { return Hook::done(_out); }
 };
 
-template<typename Member, typename... Members>
-class structure_serializer<Member, Members...> {
+template<typename Hook, typename Member, typename... Members>
+class structure_serializer<Hook, Member, Members...> : Hook {
+    class nested_hook : Hook {
+    public:
+        explicit nested_hook(Hook&& hook) noexcept
+            : Hook(std::move(hook)) { }
+
+        structure_serializer<Hook, Members...> done(uint8_t* out) noexcept {
+            return structure_serializer<Hook, Members...>(out, std::move(*static_cast<Hook*>(this)));
+        }
+    };
+private:
     uint8_t* _out;
 public:
-    explicit structure_serializer(uint8_t* out) noexcept : _out(out) { }
+    explicit structure_serializer(uint8_t* out, Hook&& hook) noexcept
+        : Hook(std::move(hook)), _out(out) { }
 
     uint8_t* position() const noexcept { return _out; }
 
     template<typename... Args>
-    structure_serializer<Members...> serialize(Args&&... args) noexcept {
+    structure_serializer<Hook, Members...> serialize(Args&&... args) noexcept {
         auto size = Member::type::serialize(_out, std::forward<Args>(args)...);
-        return structure_serializer<Members...>(_out + size);
+        return structure_serializer<Hook, Members...>(_out + size, std::move(*static_cast<Hook*>(this)));
+    }
+
+    template<typename... Args>
+    auto serialize_nested(Args&&... args) noexcept {
+        return Member::type::get_writer(nested_hook(std::move(*static_cast<Hook*>(this))), _out, std::forward<Args>(args)...);
     }
 };
 
-template<typename Tag, typename Type, typename... Members>
-class structure_serializer<optional_member<Tag, Type>, Members...> {
+template<typename Hook, typename Tag, typename Type, typename... Members>
+class structure_serializer<Hook, optional_member<Tag, Type>, Members...> : Hook {
     uint8_t* _out;
 public:
-    explicit structure_serializer(uint8_t* out) noexcept : _out(out) { }
+    explicit structure_serializer(uint8_t* out, Hook&& hook) noexcept
+        : Hook(std::move(hook)), _out(out) { }
 
     uint8_t* position() const noexcept { return _out; }
 
     template<typename... Args>
-    structure_serializer<Members...> serialize(Args&&... args) noexcept {
+    structure_serializer<Hook, Members...> serialize(Args&&... args) noexcept {
         auto size = Type::serialize(_out, std::forward<Args>(args)...);
-        return structure_serializer<Members...>(_out + size);
+        return structure_serializer<Hook, Members...>(_out + size, std::move(*static_cast<Hook*>(this)));
     }
 
-    structure_serializer<Members...> skip() noexcept {
-        return structure_serializer<Members...>(_out);
+    structure_serializer<Hook, Members...> skip() noexcept {
+        return structure_serializer<Hook, Members...>(_out, std::move(*static_cast<Hook*>(this)));
     }
 };
 
-template<typename Tag, typename... Types, typename... Members>
-class structure_serializer<variant_member<Tag, Types...>, Members...> {
+template<typename Hook, typename Tag, typename... Types, typename... Members>
+class structure_serializer<Hook, variant_member<Tag, Types...>, Members...> : Hook {
     uint8_t* _out;
 public:
-    explicit structure_serializer(uint8_t* out) noexcept : _out(out) { }
+    explicit structure_serializer(uint8_t* out, Hook&& hook) noexcept
+        : Hook(std::move(hook)), _out(out) { }
 
     uint8_t* position() const noexcept { return _out; }
 
     template<typename AlternativeTag, typename... Args>
-    structure_serializer<Members...> serialize_as(Args&&... args) noexcept {
+    structure_serializer<Hook, Members...> serialize_as(Args&&... args) noexcept {
         using type = variant<Tag, Types...>;
         auto size = type::template serialize<AlternativeTag>(_out, std::forward<Args>(args)...);
-        return structure_serializer<Members...>(_out + size);
+        return structure_serializer<Hook, Members...>(_out + size, std::move(*static_cast<Hook*>(this)));
     }
 };
 
@@ -979,20 +1025,30 @@ public:
     }
 
     template<typename Writer, typename... Args>
-    GCC6_CONCEPT(requires requires(Writer wr, structure_sizer<Members...> ser, Args... args) {
-        { wr(ser, args...) } -> size_t;
-    })
+    //GCC6_CONCEPT(requires requires(Writer wr, structure_sizer<Members...> ser, Args... args) {
+    //    { wr(ser, args...) } -> size_t;
+    //})
     static size_t size_when_serialized(Writer&& writer, Args&&... args) noexcept {
-        return std::forward<Writer>(writer)(structure_sizer<Members...>(0), std::forward<Args>(args)...);
+        return std::forward<Writer>(writer)(structure_sizer<noop_done_hook, Members...>(0, noop_done_hook()), std::forward<Args>(args)...);
+    }
+
+    template<typename Hook>
+    static auto size_when_serialized_nested(Hook&& hook) noexcept {
+        return structure_sizer<Hook, Members...>(0, std::forward<Hook>(hook));
     }
 
     template<typename Writer, typename... Args>
-    GCC6_CONCEPT(requires requires(Writer wr, structure_serializer<Members...> ser, Args... args) {
-        { wr(ser, args...) } -> uint8_t*;
-    })
+    //GCC6_CONCEPT(requires requires(Writer wr, structure_serializer<Members...> ser, Args... args) {
+    //    { wr(ser, args...) } -> uint8_t*;
+    //})
     static size_t serialize(uint8_t* out, Writer&& writer, Args&&... args) noexcept {
-        auto ptr = std::forward<Writer>(writer)(structure_serializer<Members...>(out), std::forward<Args>(args)...);
+        auto ptr = std::forward<Writer>(writer)(structure_serializer<noop_done_hook, Members...>(out, noop_done_hook()), std::forward<Args>(args)...);
         return ptr - out;
+    }
+
+    template<typename Hook>
+    static auto serialize_nested(Hook&& hook, uint8_t* out) noexcept {
+        return structure_serializer<Hook, Members...>(out, std::forward<Hook>(hook));
     }
 
     template<typename Context = decltype(no_context)>
@@ -1004,8 +1060,22 @@ public:
         return meta::head<Members...>::type::type::make_view(in, ctx);
     }
 
+    // FIXME: use tags instead of index
     template<size_t N, typename Context = decltype(no_context)> // why N and not tag?
     static auto get_member(const uint8_t* in, const Context& context = no_context) noexcept {
+        // TODO: dedup with serialized_object_size and basic_view
+        size_t total_size = 0;
+        meta::for_each(meta::take<N, Members...>(), [&] (auto ptr) {
+            using member = std::remove_pointer_t<decltype(ptr)>;
+            auto offset = in + total_size;
+            auto this_size = member::type::serialized_object_size(offset, context.template context_for<typename member::tag>(offset));
+            total_size += this_size;
+        });
+        return meta::get<N, Members...>::type::type::make_view(in + total_size, context);
+    }
+
+    template<size_t N, typename Context = decltype(no_context)> // why N and not tag?
+    static auto get_member(uint8_t* in, const Context& context = no_context) noexcept {
         // TODO: dedup with serialized_object_size and basic_view
         size_t total_size = 0;
         meta::for_each(meta::take<N, Members...>(), [&] (auto ptr) {
@@ -1179,53 +1249,97 @@ struct sparse_array_serialization_state {
     uint32_t element_count = 0;
 };
 
-template<typename T, size_t MaxElementCount>
-struct sparse_array_sizer {
-    sparse_array_serialization_state& _state;
+struct sparse_array_sizer_state {
+    sparse_array_serialization_state* _state;
     uint32_t _total_size = 0;
+
+    template<typename Hook, typename T, size_t MaxElementCount>
+    friend class sparse_array_sizer;
+private:
+    explicit sparse_array_sizer_state(sparse_array_serialization_state& st)
+        : _state(&st) { }
+};
+
+template<typename Hook, typename T, size_t MaxElementCount>
+class sparse_array_sizer : Hook {
+    sparse_array_sizer_state _state;
 public:
-    explicit sparse_array_sizer(sparse_array_serialization_state& state) noexcept
-        : _state(state) { }
+    explicit sparse_array_sizer(sparse_array_serialization_state& state, Hook&& hook) noexcept
+        : Hook(std::move(hook)), _state(state) { }
+
+    explicit sparse_array_sizer(sparse_array_sizer_state state, Hook&& hook) noexcept
+        : Hook(std::move(hook)), _state(std::move(state)) { }
+
+    sparse_array_sizer_state& internal_state() {
+        return _state;
+    }
 
     template<typename... Args>
     sparse_array_sizer& emplace(size_t idx, Args&&... args) noexcept {
-        _state.element_count = idx + 1;
-        _total_size += T::size_when_serialized(std::forward<Args>(args)...);
+        _state._state->element_count = idx + 1;
+        _state._total_size += T::size_when_serialized(std::forward<Args>(args)...);
         return *this;
     }
 
-    size_t done() noexcept {
-        return _total_size + (_state.element_count + 1) * sizeof(uint16_t) + sizeof(uint8_t);
+    auto done() noexcept {
+        auto total_size = _state._total_size + (_state._state->element_count + 1) * sizeof(uint16_t) + sizeof(uint8_t);
+        return Hook::done(total_size);
     }
 };
 
-template<typename T, size_t MaxElementCount>
-struct sparse_array_writer {
+// internal state
+class sparse_array_writer_state {
     uint8_t* _ptr;
     uint16_t _element_count;
     uint16_t _offset;
     uint16_t _index = 0;
-public:
-    sparse_array_writer(uint8_t* ptr, sparse_array_serialization_state state) noexcept
+
+    template<typename Hook, typename T, size_t MaxElementCount>
+    friend class sparse_array_writer;
+private:
+    sparse_array_writer_state(uint8_t* ptr, const sparse_array_serialization_state& state)
         : _ptr(ptr)
         , _element_count(state.element_count)
         , _offset((_element_count + 1) * sizeof(uint16_t) + sizeof(uint8_t))
-    {
-        internal::write_pod<uint8_t>(state.element_count, _ptr);
+    { }
+};
+
+template<typename Hook, typename T, size_t MaxElementCount>
+class sparse_array_writer : Hook {
+public:
+
+private:
+    sparse_array_writer_state _state;
+public:
+    sparse_array_writer(uint8_t* ptr, const sparse_array_serialization_state& state, Hook&& hook) noexcept
+        : Hook(std::move(hook))
+        , _state(ptr, state)
+    { }
+
+    sparse_array_writer(sparse_array_writer_state st, Hook&& hook) noexcept
+        : Hook(std::move(hook))
+        , _state(std::move(st))
+    { }
+
+    sparse_array_writer_state& internal_state() {
+        return _state;
     }
 
     template<typename... Args>
     sparse_array_writer& emplace(size_t idx, Args&&... args) noexcept {
-        while (_index <= idx) {
-            internal::write_pod(_offset, _ptr + sizeof(uint8_t) + _index++ * sizeof(uint16_t));
+        assert(idx < _state._element_count);
+        assert(_state._index <= idx);
+        while (_state._index <= idx) {
+            internal::write_pod(_state._offset, _state._ptr + sizeof(uint8_t) + _state._index++ * sizeof(uint16_t));
         }
-        _offset += T::serialize(_ptr + _offset, std::forward<Args>(args)...);
+        _state._offset += T::serialize(_state._ptr + _state._offset, std::forward<Args>(args)...);
         return *this;
     }
 
-    size_t done() noexcept {
-        internal::write_pod(_offset, _ptr + _element_count * sizeof(uint16_t) + sizeof(uint8_t));
-        return _offset;
+    auto done() noexcept {
+        internal::write_pod<uint8_t>(_state._element_count, _state._ptr);
+        internal::write_pod(_state._offset, _state._ptr + _state._element_count * sizeof(uint16_t) + sizeof(uint8_t));
+        return Hook::done(_state._ptr + _state._offset);
     }
 };
 
@@ -1350,7 +1464,7 @@ public:
         }
 
         template<typename Context = decltype(no_context)>
-        auto elements_range(const Context& ctx = no_context) {
+        auto elements_range(const Context& ctx = no_context) const {
             return range<Context>(_ptr, ctx);
         }
     };
@@ -1369,12 +1483,22 @@ public:
 
     template<typename Writer>
     static size_t size_when_serialized(serialization_state& state, Writer&& writer) noexcept {
-        return std::forward<Writer>(writer)(sparse_array_sizer<T, MaxElementCount>(state));
+        return std::forward<Writer>(writer)(sparse_array_sizer<noop_done_hook, T, MaxElementCount>(state, noop_done_hook()));
     }
 
     template<typename Serializer>
     static size_t serialize(uint8_t* out, serialization_state& state, Serializer&& serializer) noexcept {
-        return std::forward<Serializer>(serializer)(sparse_array_writer<T, MaxElementCount>(out, state));
+        return std::forward<Serializer>(serializer)(sparse_array_writer<noop_done_hook, T, MaxElementCount>(out, state, noop_done_hook()));
+    }
+
+    template<typename Hook>
+    static auto get_sizer(Hook&& hook, serialization_state& state) {
+        return sparse_array_sizer<Hook, T, MaxElementCount>(state, std::forward<Hook>(hook));
+    }
+
+    template<typename Hook>
+    static auto get_writer(Hook&& hook, uint8_t* out, serialization_state& state) {
+        return sparse_array_writer<Hook, T, MaxElementCount>(out, state, std::forward<Hook>(hook));
     }
 };
 
@@ -1416,5 +1540,21 @@ template<typename Type, size_t MaxCount>
 struct mover<containers::sparse_array<Type, MaxCount>> : get_method<mover, containers::sparse_array<Type, MaxCount>> { };
 
 }
+
+template<typename Serializer, typename NewHook>
+struct do_rehook { };
+
+template<template<typename, typename...> typename Writer, typename OldHook, typename... Args, typename NewHook>
+struct do_rehook<Writer<OldHook, Args...>, NewHook> {
+    using type = Writer<NewHook, Args...>;
+};
+
+template<template<typename, typename, size_t> typename Writer, typename OldHook, typename T, size_t N, typename NewHook>
+struct do_rehook<Writer<OldHook, T, N>, NewHook> {
+    using type = Writer<NewHook, T, N>;
+};
+
+template<typename Serializer, typename NewHook>
+using rehook = typename do_rehook<Serializer, NewHook>::type;
 
 }
