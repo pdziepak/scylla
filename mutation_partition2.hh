@@ -132,6 +132,8 @@ public:
         }
     }
 
+    auto view() const { return _view; }
+
     rows_entry* release() noexcept {
         return std::exchange(_entry, nullptr);
     }
@@ -169,18 +171,18 @@ public:
 
     template<typename Serializer, typename Allocator>
     class row_builder {
-        const data::schema_row_info& _row_info;
+        const std::vector<data::schema_row_info>& _sri;
         Serializer _serializer;
         Allocator _allocator;
     public:
-        row_builder(const data::schema_row_info& sri, Serializer ser, Allocator alloc) noexcept
-            : _row_info(sri), _serializer(std::move(ser)), _allocator(std::move(alloc)) { }
+        row_builder(const std::vector<data::schema_row_info>& sri, Serializer ser, Allocator alloc) noexcept
+            : _sri(sri), _serializer(std::move(ser)), _allocator(std::move(alloc)) { }
 
         row_builder(const row_builder&) = delete;
         row_builder(row_builder&&) = delete;
 
         row_builder& set_cell(column_id id, api::timestamp_type ts, bytes_view data) {
-            _serializer.set_live_cell(id, data::cell::make_live(_row_info.type_info_for(id), ts, data), _allocator);
+            _serializer.set_live_cell(id, data::cell::make_live(_sri[id / data::row::max_cell_count].type_info_for(id % data::row::max_cell_count), ts, data), _allocator);
             return *this;
         }
 
@@ -199,7 +201,7 @@ public:
                                   auto ptr = serializer.position();
                                   auto array_serializer = serializer.serialize(next).serialize_nested(state.get(0));
                                   data::row::row_builder<decltype(array_serializer), decltype(allocator)> rb(array_serializer, allocator, state, next, ptr, s.lsa_regular_row_migrators());
-                                  row_builder<decltype(rb), decltype(allocator)> builder(s.regular_row_imr_info()[0], std::move(rb), std::move(allocator));
+                                  row_builder<decltype(rb), decltype(allocator)> builder(s.regular_row_imr_info(), std::move(rb), std::move(allocator));
                                   std::forward<Writer>(writer)(builder);
                                   return builder.done();
                               }, s.lsa_regular_row_migrators()[0].get()));

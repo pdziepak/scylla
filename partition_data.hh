@@ -55,6 +55,7 @@ public:
         : _columns(std::move(tis)) { }
 
     const type_info& type_info_for(size_t id) const noexcept {
+        assert(_columns.size() > id);
         return _columns[id];
     }
 };
@@ -656,6 +657,7 @@ struct row {
             _current = static_cast<const uint8_t*>(next_v.load());
             _index++;
             if (_current) {
+                assert(_sri->size() > _index);
                 _context = row::context((*_sri)[_index]);
                 new (&_data.chk) chunk(_index * max_cell_count, _context, external_chunk::get_member<2>(_current, _context));
             }

@@ -222,6 +222,24 @@ BOOST_AUTO_TEST_CASE(test_rows_entry) {
         .with_column("v4", int32_type)
         .with_column("v5", long_type)
         .with_column("v6", int32_type)
+        .with_column("v7", bytes_type)
+        .with_column("v8", bytes_type)
+        .with_column("v9", bytes_type)
+        .with_column("v10", bytes_type)
+        .with_column("v12", bytes_type)
+        .with_column("v13", bytes_type)
+        .with_column("v14", bytes_type)
+        .with_column("v15", bytes_type)
+        .with_column("v16", bytes_type)
+        .with_column("v17", bytes_type)
+        .with_column("v18", bytes_type)
+        .with_column("v19", bytes_type)
+        .with_column("v20", bytes_type)
+        .with_column("v22", bytes_type)
+        .with_column("v23", bytes_type)
+        .with_column("v24", bytes_type)
+        .with_column("v25", bytes_type)
+        .with_column("v26", bytes_type)
         .build();
 
     auto v1 = random_int<int32_t>();
@@ -375,74 +393,110 @@ BOOST_AUTO_TEST_CASE(test_rows_entry_lsa) {
     // dedup schema
     auto s = schema_builder("ks", "cf")
         .with_column("pk", bytes_type, column_kind::partition_key)
-        .with_column("v1", int32_type)
-        .with_column("v2", bytes_type)
-        .with_column("v3", bytes_type)
-        .with_column("v4", int32_type)
-        .with_column("v5", long_type)
-        .with_column("v6", int32_type)
+        .with_column("v01", int32_type)
+        .with_column("v02", bytes_type)
+        .with_column("v03", bytes_type)
+        .with_column("v04", int32_type)
+        .with_column("v05", long_type)
+        .with_column("v06", int32_type)
+        .with_column("v07", bytes_type)
+        .with_column("v08", bytes_type)
+        .with_column("v09", bytes_type)
+        .with_column("v10", bytes_type)
+        .with_column("v11", bytes_type)
+        .with_column("v12", bytes_type)
+        .with_column("v13", bytes_type)
+        .with_column("v14", bytes_type)
+        .with_column("v15", bytes_type)
+        .with_column("v16", bytes_type)
+        .with_column("v17", bytes_type)
+        .with_column("v18", bytes_type)
+        .with_column("v19", bytes_type)
+        .with_column("v20", bytes_type)
+        .with_column("v21", bytes_type)
+        .with_column("v22", bytes_type)
+        .with_column("v23", bytes_type)
+        .with_column("v24", bytes_type)
+        .with_column("v25", bytes_type)
+        .with_column("v26", bytes_type)
         .build();
 
     logalloc::region lsa;
 
-    with_allocator(lsa.allocator(), [&] {
-        auto v2 = random_int<uint32_t>() % 10'000'000;
-        auto v3 = random_int<uint8_t>();
-        auto v5 = random_int<int64_t>();
+    for (auto i : boost::irange(0, random_test_iteration_count)) {
+        (void)i;
 
-        auto ts = api::new_timestamp();
-        auto blob2 = random_bytes(v2);
-        auto blob3 = random_bytes(v3);
+        with_allocator(lsa.allocator(), [&] {
+            auto v2 = random_int<uint32_t>() % 10'000'000;
+            auto v3 = random_int<uint8_t>();
+            auto v5 = random_int<int64_t>();
 
-        auto check_re = [&] (const v2::rows_entry_ptr& re) {
-            auto cells = re.cells();
-            auto it = cells.begin();
+            auto ts = api::new_timestamp();
+            auto blob2 = random_bytes(v2);
+            auto blob3 = random_bytes(v3);
 
-            BOOST_CHECK(it != cells.end());
-            auto i_a_c = *it;
-            BOOST_CHECK_EQUAL(i_a_c.first, 1);
-            BOOST_CHECK(i_a_c.second.is_live());
-            BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-            BOOST_CHECK(boost::equal(i_a_c.second.value(), blob2));
+            auto cn = random_int<uint8_t>() % 19 + 6;
+            BOOST_TEST_MESSAGE("additional cell at column_id " << cn);
+            auto vn = random_int<uint8_t>();
+            auto blobn = random_bytes(vn);
 
-            ++it;
-            BOOST_CHECK(it != cells.end());
-            i_a_c = *it;
-            BOOST_CHECK_EQUAL(i_a_c.first, 2);
-            BOOST_CHECK(i_a_c.second.is_live());
-            BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-            BOOST_CHECK(boost::equal(i_a_c.second.value(), blob3));
+            auto check_re = [&] (const v2::rows_entry_ptr& re) {
+                size_t idx = 0;
+                data::row::for_each(re.view(), [&] (auto& i_a_c) {
+                    switch (idx) {
+                    case 0:
+                        BOOST_CHECK_EQUAL(i_a_c.first, 1);
+                        BOOST_CHECK(i_a_c.second.is_live());
+                        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+                        BOOST_CHECK(boost::equal(i_a_c.second.value(), blob2));
+                        break;
+                    case 1:
+                        BOOST_CHECK_EQUAL(i_a_c.first, 2);
+                        BOOST_CHECK(i_a_c.second.is_live());
+                        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+                        BOOST_CHECK(boost::equal(i_a_c.second.value(), blob3));
+                        break;
+                    case 2:
+                        BOOST_CHECK_EQUAL(i_a_c.first, 4);
+                        BOOST_CHECK(i_a_c.second.is_live());
+                        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+                        BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+                        break;
+                    case 3:
+                        BOOST_CHECK_EQUAL(i_a_c.first, cn);
+                        BOOST_CHECK(i_a_c.second.is_live());
+                        BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
+                        BOOST_CHECK(boost::equal(i_a_c.second.value(), blobn));
+                        break;
+                    default:
+                        BOOST_FAIL("should not reach");
+                        break;
+                    }
+                    ++idx;
+                });
+                BOOST_CHECK_EQUAL(idx, 4);
+            };
 
-            ++it;
-            BOOST_CHECK(it != cells.end());
-            i_a_c = *it;
-            BOOST_CHECK_EQUAL(i_a_c.first, 4);
-            BOOST_CHECK(i_a_c.second.is_live());
-            BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-            BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+            // TODO: disable relcaim here
+            auto re = v2::rows_entry_ptr::make(*s, clustering_key::make_empty(), [&] (auto& builder) {
+                builder.set_cell(1, ts, blob2);
+                builder.set_cell(2, ts, blob3);
+                builder.set_cell(4, ts, long_type->decompose(data_value(v5)));
+                builder.set_cell(cn, ts, blobn);
+            });
+            check_re(re);
 
-            ++it;
-            BOOST_CHECK(it == cells.end());
-        };
+            intrusive_set_external_comparator<v2::rows_entry_header, &v2::rows_entry_header::_link> tree;
+            tree.insert_before(tree.end(), *re.release());
 
-        // TODO: disable relcaim here
-        auto re = v2::rows_entry_ptr::make(*s, clustering_key::make_empty(), [&] (auto& builder) {
-            builder.set_cell(1, ts, blob2);
-            builder.set_cell(2, ts, blob3);
-            builder.set_cell(4, ts, long_type->decompose(data_value(v5)));
+            BOOST_TEST_MESSAGE("starting full compaction...");
+            lsa.full_compaction();
+            BOOST_TEST_MESSAGE("full compaction completed");
+
+            re = v2::rows_entry_ptr(*s, *static_cast<v2::rows_entry*>(&*tree.begin()));
+            tree.erase(tree.begin());
+            BOOST_CHECK(tree.empty());
+            check_re(re);
         });
-        check_re(re);
-
-        intrusive_set_external_comparator<v2::rows_entry_header, &v2::rows_entry_header::_link> tree;
-        tree.insert_before(tree.end(), *re.release());
-
-        BOOST_TEST_MESSAGE("starting full compaction...");
-        lsa.full_compaction();
-        BOOST_TEST_MESSAGE("full compaction completed");
-
-        re = v2::rows_entry_ptr(*s, *static_cast<v2::rows_entry*>(&*tree.begin()));
-        tree.erase(tree.begin());
-        BOOST_CHECK(tree.empty());
-        check_re(re);
-    });
+    }
 }
