@@ -353,6 +353,123 @@ inline auto build_visitor(Functions&&... fns) {
 
 // </stolen>
 
+class value_view {
+    size_t _remaining_size;
+    bytes_view _first_chunk;
+    const uint8_t* _next;
+public:
+    value_view(bytes_view first, size_t remaining_size, const uint8_t* next)
+        : _remaining_size(remaining_size), _first_chunk(first), _next(next)
+    { }
+
+    class iterator {
+        bytes_view _view;
+        const uint8_t* _next;
+        size_t _left;
+    public:
+        // FIXME: make a real iterator
+        iterator(bytes_view bv, size_t total, const uint8_t* next) noexcept
+            : _view(bv), _next(next), _left(total) { }
+
+        const bytes_view& operator*() const {
+            return _view;
+        }
+        const bytes_view* operator->() const {
+            return &_view;
+        }
+
+        // FIXME: iterators destroy the information about the last chunk
+        // Use range-based approach exclusively.
+        iterator& operator++() {
+            if (!_next) {
+                _view = bytes_view();
+            } else if (_left > cell::maximum_external_chunk_length) {
+                cell::chunk_context ctx(_next);
+                auto v = cell::external_chunk::make_view(_next, ctx);
+                _next = static_cast<const uint8_t*>(v.get<cell::tags::chunk_next>(ctx).load());
+                _view = v.get<cell::tags::chunk_data>(ctx);
+                _left -= cell::maximum_external_chunk_length;
+            } else {
+                cell::last_chunk_context ctx(_next);
+                auto v = cell::external_last_chunk::make_view(_next, ctx);
+                _view = v.get<cell::tags::chunk_data>(ctx);
+                _next = nullptr;
+            }
+            return *this;
+        }
+        iterator operator++(int) {
+            auto it = *this;
+            operator++();
+            return it;
+        }
+
+        bool operator==(const iterator& other) const {
+            return _view.data() == other._view.data();
+        }
+        bool operator!=(const iterator& other) const {
+            return !(*this == other);
+        }
+    };
+
+    auto begin() const {
+        return iterator(_first_chunk, _remaining_size, _next);
+    }
+    auto end() const {
+        return iterator(bytes_view(), 0, nullptr);
+    }
+
+    bool operator==(const value_view& other) const noexcept {
+        // We can assume that all values are fragmented exactly in the same way.
+        auto it1 = begin();
+        auto it2 = other.begin();
+        while (it1 != end() && it2 != other.end()) {
+            if (*it1 != *it2) {
+                return false;
+            }
+            ++it1;
+            ++it2;
+        }
+        return it1 == end() && it2 == other.end();
+    }
+
+    size_t size() const noexcept {
+        return _first_chunk.size() + _remaining_size;
+    }
+
+    bool is_fragmented() const noexcept {
+        return bool(_next);
+    }
+
+    bytes_view first_chunk() const noexcept {
+        return _first_chunk;
+    }
+
+    //[[deprecated]]
+    bytes linearize() const {
+        bytes b(bytes::initialized_later(), size());
+        auto it = b.begin();
+        for (auto chunk : *this) {
+            it = boost::copy(chunk, it);
+        }
+        return b;
+    }
+
+    template<typename Function>
+   // [[deprecated]]
+    auto with_linearized(Function&& fn) const {
+        bytes b;
+        bytes_view bv;
+        if (is_fragmented()) {
+            b = linearize();
+            bv = b;
+        } else {
+            bv = _first_chunk;
+        }
+        fn(bv);
+    }
+};
+
+
 class cell::view {
     context _context;
     structure::view _view;
@@ -378,38 +495,34 @@ public:
     }
 
     // TODO: do not linearise, provide apropriate wrapper
-    bytes value() const noexcept {
+    value_view value() const noexcept {
         // TODO: let visit take Visitors... and call build_visitor internally
         return _view.get<tags::value>().visit(build_visitor(
-            [] (fixed_value::view view) { return bytes(view.begin(), view.end()); },
+            [] (fixed_value::view view) { return value_view(view, 0, nullptr); /*bytes(view.begin(), view.end());*/ },
             [&] (variable_value::view view) {
                 return view.get<tags::value_data>().visit(build_visitor(
                     [&view] (imr::fixed_size_value<void*>::view ptr) {
                         auto size = view.get<tags::value_size>().load();
                         auto ex_ptr = static_cast<const uint8_t*>(ptr.load());
-
-                        bytes data(bytes::initialized_later(), size);
-                        auto out = data.begin();
-                        while (size > maximum_external_chunk_length) {
+                        if (size > maximum_external_chunk_length) {
                             auto ex_ctx = chunk_context(ex_ptr);
                             auto ex_view = external_chunk::make_view(ex_ptr, ex_ctx);
-                            ex_ptr = static_cast<const uint8_t*>(ex_view.get<tags::chunk_next>().load());
-                            out = boost::copy(ex_view.get<tags::chunk_data>(ex_ctx), out);
-                            size -= maximum_external_chunk_length;
+                            auto next = static_cast<const uint8_t*>(ex_view.get<tags::chunk_next>().load());
+                            return value_view(ex_view.get<tags::chunk_data>(ex_ctx), size - maximum_external_chunk_length, next);
+                        } else {
+                            auto ex_ctx = last_chunk_context(ex_ptr);
+                            auto ex_view = external_last_chunk::make_view(ex_ptr, ex_ctx);
+                            assert(ex_view.get<tags::chunk_data>(ex_ctx).size() == size);
+                            return value_view(ex_view.get<tags::chunk_data>(ex_ctx), 0, nullptr);
                         }
-
-                        auto ex_ctx = last_chunk_context(ex_ptr);
-                        auto ex_view = external_last_chunk::make_view(ex_ptr, ex_ctx);
-                        assert(size == ex_view.get<tags::last_chunk_size>(ex_ctx).load());
-                        boost::copy(ex_view.get<tags::chunk_data>(ex_ctx), out);
-                        return data;
                     },
                     [] (imr::fixed_buffer<tags::data>::view data) {
-                        return bytes(data.begin(), data.end());
+                        //return bytes(data.begin(), data.end());
+                        return value_view(data, 0, nullptr);
                     }
                 ), _context.context_for<tags::variable_value>(view.raw_pointer())); // TODO: hide this raw_pointer
             },
-            [] (...) -> bytes { __builtin_unreachable(); }
+            [] (...) -> value_view { __builtin_unreachable(); }
         ), _context);
     }
 };
@@ -636,6 +749,7 @@ struct row {
             chunk chk;
         } _data;
     public:
+        // FIXME: make a real iterator
         iterator() = default;
         iterator(const std::vector<schema_row_info>& sri, const void* pointer)
             : _sri(&sri), _context(sri[0]), _current(static_cast<const uint8_t*>(pointer))

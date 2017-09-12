@@ -219,7 +219,7 @@ public:
                         data::cell::view& cell = id_a_c.second;
                         column_id id = id_a_c.first;
                         // TODO: this is not reasonable at all
-                        rb.set_live_cell(id_a_c.first, data::cell::make_live(s.regular_row_imr_info()[id / data::row::max_cell_count].type_info_for(id % data::row::max_cell_count), cell.timestamp(), cell.value()), allocator);
+                        rb.set_live_cell(id_a_c.first, data::cell::make_live(s.regular_row_imr_info()[id / data::row::max_cell_count].type_info_for(id % data::row::max_cell_count), cell.timestamp(), cell.value().linearize()), allocator);
                     },
                     [&] (auto&& a, auto&& b) {
                         auto cell = &a.second;
@@ -228,7 +228,7 @@ public:
                             cell = &b.second;
                         }
                         column_id id = a.first;
-                        rb.set_live_cell(a.first, data::cell::make_live(s.regular_row_imr_info()[id / data::row::max_cell_count].type_info_for(id % data::row::max_cell_count), cell->timestamp(), cell->value()), allocator);
+                        rb.set_live_cell(a.first, data::cell::make_live(s.regular_row_imr_info()[id / data::row::max_cell_count].type_info_for(id % data::row::max_cell_count), cell->timestamp(), cell->value().linearize()), allocator);
                     }
                 ), [] (auto& x, auto& y) { return x.first < y.first; });
                 return rb.done();
@@ -252,7 +252,7 @@ public:
                                           data::cell::view& cell = id_a_c.second;
                                           // TODO: this is not reasonable at all
                                           column_id id = id_a_c.first;
-                                          rb.set_live_cell(id_a_c.first, data::cell::make_live(s.regular_row_imr_info()[id / data::row::max_cell_count].type_info_for(id % data::row::max_cell_count), cell.timestamp(), cell.value()), allocator);
+                                          rb.set_live_cell(id_a_c.first, data::cell::make_live(s.regular_row_imr_info()[id / data::row::max_cell_count].type_info_for(id % data::row::max_cell_count), cell.timestamp(), cell.value().linearize()), allocator);
                                       }
                                       return rb.done();
                               }, s.lsa_regular_row_migrators()[0].get()));
@@ -286,7 +286,7 @@ public:
                                           }
                                           data::cell::view& cell = *diff_cells[i];
                                           // TODO: this is not reasonable at all
-                                          rb.set_live_cell(i, data::cell::make_live(s.regular_row_imr_info()[0].type_info_for(i), cell.timestamp(), cell.value()), allocator);
+                                          rb.set_live_cell(i, data::cell::make_live(s.regular_row_imr_info()[0].type_info_for(i), cell.timestamp(), cell.value().linearize()), allocator);
                                       }
                                       return rb.done();
                               }, s.lsa_regular_row_migrators()[0].get()));

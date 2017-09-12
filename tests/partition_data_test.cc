@@ -114,7 +114,7 @@ BOOST_AUTO_TEST_CASE(test_live_cell_creation) {
         auto view = data::cell::make_view(ti, buffer.get());
         BOOST_CHECK(view.is_live());
         BOOST_CHECK_EQUAL(view.timestamp(), timestamp);
-        BOOST_CHECK(boost::equal(view.value(), value));
+        BOOST_CHECK(boost::equal(view.value().linearize(), value));
 
         data::cell::destroy(ti, buffer.get());
     }
@@ -203,7 +203,7 @@ BOOST_AUTO_TEST_CASE(test_row) {
         data::row::for_each(view, [&] (auto&& i_a_c) {
             BOOST_CHECK_EQUAL(ids[idx], i_a_c.first);
             BOOST_CHECK_EQUAL(cells[idx].second, i_a_c.second.timestamp());
-            BOOST_CHECK(boost::equal(cells[idx].first, i_a_c.second.value()));
+            BOOST_CHECK(boost::equal(cells[idx].first, i_a_c.second.value().first_chunk()));
             idx++;
         });
         BOOST_CHECK_EQUAL(idx, cell_count);
@@ -269,7 +269,7 @@ BOOST_AUTO_TEST_CASE(test_rows_entry) {
         BOOST_CHECK_EQUAL(i_a_c.first, 0);
         BOOST_CHECK(i_a_c.second.is_live());
         BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-        BOOST_CHECK(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1))));
+        BOOST_CHECK(int32_type->equal(i_a_c.second.value().first_chunk(), int32_type->decompose(data_value(v1))));
 
         ++it;
         BOOST_CHECK(it != cells.end());
@@ -285,7 +285,7 @@ BOOST_AUTO_TEST_CASE(test_rows_entry) {
         BOOST_CHECK_EQUAL(i_a_c.first, 4);
         BOOST_CHECK(i_a_c.second.is_live());
         BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-        BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+        BOOST_CHECK(long_type->equal(i_a_c.second.value().first_chunk(), long_type->decompose(data_value(v5))));
 
         ++it;
         BOOST_CHECK(it == cells.end());
@@ -323,7 +323,7 @@ BOOST_AUTO_TEST_CASE(test_rows_entry) {
         BOOST_CHECK_EQUAL(i_a_c.first, 0);
         BOOST_CHECK(i_a_c.second.is_live());
         BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts2);
-        BOOST_CHECK(int32_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v1b))));
+        BOOST_CHECK(int32_type->equal(i_a_c.second.value().first_chunk(), int32_type->decompose(data_value(v1b))));
 
         ++it;
         BOOST_CHECK(it != cells.end());
@@ -339,7 +339,7 @@ BOOST_AUTO_TEST_CASE(test_rows_entry) {
         BOOST_CHECK_EQUAL(i_a_c.first, 4);
         BOOST_CHECK(i_a_c.second.is_live());
         BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-        BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+        BOOST_CHECK(long_type->equal(i_a_c.second.value().first_chunk(), long_type->decompose(data_value(v5))));
 
         ++it;
         BOOST_CHECK(it != cells.end());
@@ -347,7 +347,7 @@ BOOST_AUTO_TEST_CASE(test_rows_entry) {
         BOOST_CHECK_EQUAL(i_a_c.first, 5);
         BOOST_CHECK(i_a_c.second.is_live());
         BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts2);
-        BOOST_CHECK(long_type->equal(i_a_c.second.value(), int32_type->decompose(data_value(v6))));
+        BOOST_CHECK(long_type->equal(i_a_c.second.value().first_chunk(), int32_type->decompose(data_value(v6))));
 
         ++it;
         BOOST_CHECK(it == cells.end());
@@ -382,7 +382,7 @@ BOOST_AUTO_TEST_CASE(test_rows_entry) {
         BOOST_CHECK_EQUAL(i_a_c.first, 4);
         BOOST_CHECK(i_a_c.second.is_live());
         BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-        BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+        BOOST_CHECK(long_type->equal(i_a_c.second.value().first_chunk(), long_type->decompose(data_value(v5))));
 
         ++it;
         BOOST_CHECK(it == cells.end());
@@ -448,25 +448,25 @@ BOOST_AUTO_TEST_CASE(test_rows_entry_lsa) {
                         BOOST_CHECK_EQUAL(i_a_c.first, 1);
                         BOOST_CHECK(i_a_c.second.is_live());
                         BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-                        BOOST_CHECK(boost::equal(i_a_c.second.value(), blob2));
+                        BOOST_CHECK(boost::equal(i_a_c.second.value().linearize(), blob2));
                         break;
                     case 1:
                         BOOST_CHECK_EQUAL(i_a_c.first, 2);
                         BOOST_CHECK(i_a_c.second.is_live());
                         BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-                        BOOST_CHECK(boost::equal(i_a_c.second.value(), blob3));
+                        BOOST_CHECK(boost::equal(i_a_c.second.value().linearize(), blob3));
                         break;
                     case 2:
                         BOOST_CHECK_EQUAL(i_a_c.first, 4);
                         BOOST_CHECK(i_a_c.second.is_live());
                         BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-                        BOOST_CHECK(long_type->equal(i_a_c.second.value(), long_type->decompose(data_value(v5))));
+                        BOOST_CHECK(long_type->equal(i_a_c.second.value().first_chunk(), long_type->decompose(data_value(v5))));
                         break;
                     case 3:
                         BOOST_CHECK_EQUAL(i_a_c.first, cn);
                         BOOST_CHECK(i_a_c.second.is_live());
                         BOOST_CHECK_EQUAL(i_a_c.second.timestamp(), ts);
-                        BOOST_CHECK(boost::equal(i_a_c.second.value(), blobn));
+                        BOOST_CHECK(boost::equal(i_a_c.second.value().linearize(), blobn));
                         break;
                     default:
                         BOOST_FAIL("should not reach");
