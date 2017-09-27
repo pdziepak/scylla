@@ -34,16 +34,16 @@ template<typename Tag, typename Type>
 struct optional {
     using underlying = Type;
 public:
-    template<mutable_view is_mutable>
+    template<::mutable_view is_mutable>
     class basic_view {
-        using pointer_type = std::conditional_t<is_mutable == mutable_view::no,
+        using pointer_type = std::conditional_t<is_mutable == ::mutable_view::no,
                                                 const uint8_t*, uint8_t*>;
         pointer_type _ptr;
     public:
         explicit basic_view(pointer_type ptr) noexcept : _ptr(ptr) { }
 
-        operator basic_view<mutable_view::no>() const noexcept {
-            return basic_view<mutable_view::no>(_ptr);
+        operator basic_view<::mutable_view::no>() const noexcept {
+            return basic_view<::mutable_view::no>(_ptr);
         }
 
         template<typename Context = no_context_t>
@@ -55,8 +55,8 @@ public:
         }
     };
 
-    using view = basic_view<mutable_view::no>;
-    using mutable_view = basic_view<mutable_view::yes>;
+    using view = basic_view<::mutable_view::no>;
+    using mutable_view = basic_view<::mutable_view::yes>;
 public:
     template<typename Context = no_context_t>
     static auto make_view(const uint8_t* in, const Context& ctx = no_context) noexcept {
