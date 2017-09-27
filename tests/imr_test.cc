@@ -30,6 +30,7 @@
 
 #include "imr/fundamental.hh"
 #include "imr/compound.hh"
+#include "utils/make_visitor.hh"
 
 static constexpr auto random_test_iteration_count = 20;
 
@@ -42,16 +43,33 @@ T random_int() {
     return dist(gen);
 }
 
-bytes random_bytes() {
-    std::uniform_int_distribution<size_t> dist_length(0, 128 * 1024);
-    bytes b(bytes::initialized_later(), dist_length(gen));
+template<typename T>
+T random_int(T max) {
+    std::uniform_int_distribution<T> dist(0, max);
+    return dist(gen);
+}
+
+
+bool random_bool() {
+    static std::bernoulli_distribution dist;
+    return dist(gen);
+}
+
+bytes random_bytes(size_t n) {
+    bytes b(bytes::initialized_later(), n);
     boost::generate(b, [] { return random_int<bytes::value_type>(); });
     return b;
+}
+
+bytes random_bytes() {
+    static std::uniform_int_distribution<size_t> dist_length(0, 128 * 1024);
+    return random_bytes(dist_length(gen));
 }
 
 class A;
 class B;
 class C;
+class D;
 
 BOOST_AUTO_TEST_SUITE(fundamental);
 
@@ -313,6 +331,107 @@ BOOST_AUTO_TEST_CASE(test_optional) {
 
         auto view = optional_type1::make_view(buffer.get());
         BOOST_CHECK_EQUAL(view.get().load(), value);
+    }
+}
+
+
+static constexpr auto data_size = 128;
+using variant_type = imr::variant<A,
+                                  imr::member<B, imr::compressed_integer<uint64_t>>,
+                                  imr::member<C, imr::buffer<C>>,
+                                  imr::member<D, imr::pod<int64_t>>>;
+
+struct test_variant_context {
+    unsigned _alternative_idx;
+public:
+    template<typename Tag>
+    size_t size_of() const noexcept;
+
+    template<typename Tag>
+    auto active_alternative_of() const noexcept;
+
+    template<typename Tag, typename... Args>
+    decltype(auto) context_for(Args&&...) const noexcept { return *this; }
+};
+
+template<>
+size_t test_variant_context::size_of<C>() const noexcept {
+    return data_size;
+}
+
+template<>
+auto test_variant_context::active_alternative_of<A>() const noexcept {
+    switch (_alternative_idx) {
+    case 0:
+        return variant_type::index_for<B>();
+    case 1:
+        return variant_type::index_for<C>();
+    case 2:
+        return variant_type::index_for<D>();
+    default:
+        BOOST_FAIL("should not reach");
+        abort();
+    }
+}
+
+BOOST_AUTO_TEST_CASE(test_variant) {
+    for (auto i = 0; i < random_test_iteration_count; i++) {
+        unsigned alternative_idx = random_int<unsigned>(2);
+
+        uint64_t uinteger = random_int<uint64_t>();
+        int64_t integer = random_int<int64_t>();
+        bytes data = random_bytes(data_size);
+
+        const size_t expected_size = alternative_idx == 0
+                                     ? imr::compressed_integer<uint64_t>::size_when_serialized(uinteger)
+                                     : (alternative_idx == 1 ? data_size : sizeof(int64_t));
+
+        auto buffer = std::make_unique<uint8_t[]>(expected_size + imr::compressed_integer<uint64_t>::overread_size);
+
+        if (!alternative_idx) {
+            BOOST_CHECK_EQUAL(variant_type::size_when_serialized<B>(uinteger), expected_size);
+            BOOST_CHECK_EQUAL(variant_type::serialize<B>(buffer.get(), uinteger), expected_size);
+        } else if (alternative_idx == 1) {
+            BOOST_CHECK_EQUAL(variant_type::size_when_serialized<C>(data), expected_size);
+            BOOST_CHECK_EQUAL(variant_type::serialize<C>(buffer.get(), data), expected_size);
+        } else {
+            BOOST_CHECK_EQUAL(variant_type::size_when_serialized<D>(integer), expected_size);
+            BOOST_CHECK_EQUAL(variant_type::serialize<D>(buffer.get(), integer), expected_size);
+        }
+
+        auto ctx = test_variant_context { alternative_idx };
+
+        BOOST_CHECK_EQUAL(variant_type::serialized_object_size(buffer.get(), ctx), expected_size);
+
+        auto view = variant_type::make_view(buffer.get(), ctx);
+        bool visitor_was_called = false;
+        view.visit(utils::make_visitor(
+                [&] (imr::compressed_integer<uint64_t>::view val) {
+                    visitor_was_called = true;
+                    if (alternative_idx == 0) {
+                        BOOST_CHECK_EQUAL(val.load(), uinteger);
+                    } else {
+                        BOOST_FAIL("wrong variant alternative (B)");
+                    }
+                },
+                [&] (imr::buffer<C>::view buf) {
+                    visitor_was_called = true;
+                    if (alternative_idx == 1) {
+                        BOOST_CHECK(boost::equal(data, buf));
+                    } else {
+                        BOOST_FAIL("wrong variant alternative (C)");
+                    }
+                },
+                [&] (imr::pod<int64_t>::view val) {
+                    visitor_was_called = true;
+                    if (alternative_idx == 2) {
+                        BOOST_CHECK_EQUAL(val.load(), integer);
+                    } else {
+                        BOOST_FAIL("wrong variant alternative (D)");
+                    }
+                }
+        ), ctx);
+        BOOST_CHECK(visitor_was_called);
     }
 }
 
