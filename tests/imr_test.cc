@@ -29,6 +29,7 @@
 #include <boost/range/algorithm/generate.hpp>
 
 #include "imr/fundamental.hh"
+#include "imr/compound.hh"
 
 static constexpr auto random_test_iteration_count = 20;
 
@@ -271,6 +272,48 @@ BOOST_AUTO_TEST_CASE(test_compressed_int32_t) {
 
 BOOST_AUTO_TEST_CASE(test_compressed_int64_t) {
     test_compressed_ints<int64_t>();
+}
+
+BOOST_AUTO_TEST_SUITE_END();
+
+BOOST_AUTO_TEST_SUITE(compound);
+
+struct test_optional_context {
+    template<typename Tag>
+    bool is_present() const noexcept;
+
+    template<typename Tag, typename... Args>
+    decltype(auto) context_for(Args&&...) const noexcept { return *this; }
+};
+template<>
+bool test_optional_context::is_present<A>() const noexcept {
+    return true;
+}
+template<>
+bool test_optional_context::is_present<B>() const noexcept {
+    return false;
+}
+
+BOOST_AUTO_TEST_CASE(test_optional) {
+    using optional_type1 = imr::optional<A, imr::compressed_integer<uint32_t>>;
+    using optional_type2 = imr::optional<B, imr::compressed_integer<uint32_t>>;
+
+    for (auto i = 0; i < random_test_iteration_count; i++) {
+        auto value = random_int<uint32_t>();
+        auto expected_size = imr::compressed_integer<uint32_t>::size_when_serialized(value);
+        BOOST_CHECK_GE(optional_type1::underlying::maximum_size, expected_size);
+
+        auto buffer = std::make_unique<uint8_t[]>(expected_size + optional_type1::underlying::overread_size);
+
+        BOOST_CHECK_EQUAL(optional_type1::size_when_serialized(value), expected_size);
+        BOOST_CHECK_EQUAL(optional_type1::serialize(buffer.get(), value), expected_size);
+
+        BOOST_CHECK_EQUAL(optional_type1::serialized_object_size(buffer.get(), test_optional_context()), expected_size);
+        BOOST_CHECK_EQUAL(optional_type2::serialized_object_size(buffer.get(), test_optional_context()), 0);
+
+        auto view = optional_type1::make_view(buffer.get());
+        BOOST_CHECK_EQUAL(view.get().load(), value);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END();
