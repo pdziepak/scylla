@@ -100,5 +100,146 @@ struct default_lsa_migrate_fn {
 template<typename Structure>
 lsa_migrate_fn<Structure, no_context_factory_t> default_lsa_migrate_fn<Structure>::migrate_fn(no_context_factory);
 
+class object_allocator {
+    union allocation {
+        static_assert(std::is_trivially_destructible<std::pair<size_t, void*>>::value, "");
+        static_assert(std::is_trivially_destructible<std::pair<size_t, allocation_strategy::migrate_fn>>::value, "");
+    private:
+        std::pair<size_t, allocation_strategy::migrate_fn> _allocation_request;
+        std::pair<size_t, void*> _allocated_object;
+    public:
+        explicit allocation(size_t n, allocation_strategy::migrate_fn fn) noexcept
+            : _allocation_request(std::make_pair(n, fn)) { }
+
+        void allocate() {
+            auto ptr = current_allocator().alloc(_allocation_request.second, _allocation_request.first + 7, 1);
+            _allocated_object = std::make_pair(_allocation_request.first, ptr);
+        }
+
+        void free() noexcept {
+            current_allocator().free(_allocated_object.second, _allocated_object.first + 7);
+        }
+
+        void set_request_size(size_t n) noexcept {
+            _allocation_request.first = n;
+        }
+
+        void* pointer() const noexcept { return _allocated_object.second; }
+        size_t size() const noexcept { return _allocated_object.first; }
+    };
+
+    utils::chunked_vector<allocation> _allocations;
+    bool _failed = false;
+    size_t _position = 0;
+private:
+    size_t request(size_t n, allocation_strategy::migrate_fn migrate) noexcept {
+        auto id = _allocations.size();
+        try {
+            _allocations.emplace_back(n, migrate);
+        } catch (...) {
+            _failed = true;
+        }
+        return id;
+    }
+    void set_request_size(size_t id, size_t n) noexcept {
+        if (!_failed) {
+            _allocations[id].set_request_size(n);
+        }
+    }
+    uint8_t* next_object() noexcept {
+        return static_cast<uint8_t*>(_allocations[_position++].pointer());
+    }
+public:
+    class sizer {
+        object_allocator* _parent;
+    public:
+        class continuation {
+            object_allocator* _parent;
+            size_t _idx;
+        public:
+            continuation(object_allocator& parent, size_t idx) noexcept
+                : _parent(&parent), _idx(idx) { }
+            void* run(size_t size) noexcept {
+                _parent->set_request_size(_idx, size);
+                return nullptr;
+            }
+        };
+    public:
+        explicit sizer(object_allocator& parent) noexcept
+            : _parent(&parent) { }
+
+        template<typename T, typename... Args>
+        uint8_t* allocate(migrate_fn_type* migrate_fn, Args&& ... args) noexcept {
+            auto size = T::size_when_serialized(std::forward<Args>(args)...);
+            _parent->request(size, migrate_fn);
+            return nullptr;
+        }
+
+        template<typename T, typename... Args>
+        auto allocate_nested(migrate_fn_type* migrate_fn, Args&& ... args) noexcept {
+            auto n = _parent->request(0, migrate_fn);
+            return T::get_sizer(continuation(*_parent, n),
+                                std::forward<Args>(args)...);
+        }
+    };
+
+    class serializer {
+        object_allocator* _parent;
+    public:
+        class continuation {
+            void* _ptr;
+        public:
+            explicit continuation(void* ptr) noexcept : _ptr(ptr) { }
+            void* run(uint8_t*) noexcept {
+                return _ptr;
+            }
+        };
+    public:
+        explicit serializer(object_allocator& parent) noexcept
+            : _parent(&parent) { }
+
+        template<typename T, typename... Args>
+        uint8_t* allocate(migrate_fn_type* migrate_fn, Args&& ... args) noexcept {
+            auto ptr = _parent->next_object();
+            T::serialize(ptr, std::forward<Args>(args)...);
+            return ptr;
+        }
+
+        template<typename T, typename... Args>
+        auto allocate_nested(migrate_fn_type*, Args&& ... args) noexcept {
+            auto ptr = _parent->next_object();
+            return T::get_serializer(ptr,
+                                     continuation(ptr),
+                                     std::forward<Args>(args)...);
+        }
+    };
+
+public:
+    size_t requested_allocations_count() const noexcept { return _allocations.size(); }
+
+    void allocate_all() {
+        if (_failed) {
+            throw std::bad_alloc();
+        }
+        auto it = _allocations.begin();
+        try {
+            // TODO: Send a batch of allocations to the allocation strategy.
+            while (it != _allocations.end()) {
+                it->allocate();
+                ++it;
+            }
+        } catch (...) {
+            while (it != _allocations.begin()) {
+                --it;
+                it->free();
+            }
+            throw;
+        }
+    }
+
+    sizer get_sizer() noexcept { return sizer(*this); }
+    serializer get_serializer() noexcept { return serializer(*this); }
+};
+
 }
 }
