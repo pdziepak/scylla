@@ -682,7 +682,6 @@ deps['tests/log_heap_test'] = ['tests/log_heap_test.cc']
 deps['tests/anchorless_list_test'] = ['tests/anchorless_list_test.cc']
 deps['tests/meta_test'] = ['tests/meta_test.cc']
 deps['tests/imr_test'] = ['tests/imr_test.cc']
-deps['tests/partition_data_test'] = ['tests/partition_data_test.cc']
 
 warnings = [
     '-Wno-mismatched-tags',  # clang-only
