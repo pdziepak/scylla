@@ -27,56 +27,50 @@
 #include <boost/range/irange.hpp>
 #include <boost/range/algorithm/generate.hpp>
 
-#include "partition_data.hh"
+#include "data/cell.hh"
 
-// duplicated from imr_test.cc
+#include "random-utils.hh"
+#include "disk-error-handler.hh"
+
 static constexpr auto random_test_iteration_count = 20;
 
-static std::random_device rd;
-static std::default_random_engine gen(rd());
-
-template<typename T>
-T random_int() {
-    static std::uniform_int_distribution<T> dist;
-    return dist(gen);
-}
-
-bool random_bool() {
-    static std::bernoulli_distribution dist;
-    return dist(gen);
-}
-
-bytes random_bytes(size_t n) {
-    bytes b(bytes::initialized_later(), n);
-    boost::generate(b, [] { return random_int<bytes::value_type>(); });
-    return b;
-}
-
-bytes random_bytes() {
-    static std::uniform_int_distribution<size_t> dist_length(0, 128 * 1024);
-    return random_bytes(dist_length(gen));
-}
-//</duplicated>
-
 BOOST_AUTO_TEST_CASE(test_live_cell_creation) {
-    for (auto i : boost::irange(0, random_test_iteration_count)) {
-        (void)i;
+    for (auto i = 0; i < random_test_iteration_count; i++) {
+        bool fixed_size = tests::random::get_bool();
+        auto size = tests::random::get_int<uint32_t>(1, fixed_size ? data::cell::maximum_internal_storage_length
+                                                                   : data::cell::maximum_external_chunk_length * 3);
+        auto value = tests::random::get_bytes(size);
+        auto timestamp = tests::random::get_int<api::timestamp_type>();
+        auto ti = [&] {
+            if (fixed_size) {
+                return data::type_info::make_fixed_size(size);
+            } else {
+                return data::type_info::make_variable_size();
+            }
+        }();
 
-        auto value = random_bytes();
-        auto timestamp = random_int<api::timestamp_type>();
-        data::type_info ti;
+        imr::alloc::object_allocator allocator;
 
         auto builder = data::cell::make_live(ti, timestamp, value);
-        auto expected_size = data::cell::size_of(builder);
-        BOOST_CHECK_GT(expected_size, value.size());
-        BOOST_TEST_MESSAGE("cell size: " << expected_size);
+        auto expected_size = data::cell::size_of(builder, allocator);
+        if (fixed_size) {
+            BOOST_CHECK_GE(expected_size, size);
+        }
+        BOOST_TEST_MESSAGE("cell size: " << expected_size << ", value size: " << size);
+
+        allocator.allocate_all();
 
         auto buffer = std::make_unique<uint8_t[]>(expected_size);
-        BOOST_CHECK_EQUAL(data::cell::serialize(buffer.get(), builder), expected_size);
+        BOOST_CHECK_EQUAL(data::cell::serialize(buffer.get(), builder, allocator), expected_size);
 
-        auto view = data::cell::make_view(ti, buffer.get());
+        auto view = data::cell::make_atomic_cell_view(ti, buffer.get());
         BOOST_CHECK(view.is_live());
         BOOST_CHECK_EQUAL(view.timestamp(), timestamp);
-        BOOST_CHECK(boost::equal(view.value(), value));
+        BOOST_CHECK(boost::equal(view.value().linearize(), value));
+
+        imr::methods::destroy<data::cell::structure>(buffer.get());
     }
 }
+
+// FIXME: We need more tests!
+
