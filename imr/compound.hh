@@ -584,4 +584,7 @@ public:
     }
 };
 
+template<typename Tag, typename T>
+struct tagged_type : T { };
+
 }
