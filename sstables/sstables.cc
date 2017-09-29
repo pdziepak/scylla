@@ -1770,7 +1770,7 @@ void sstable::write_cell(file_writer& out, atomic_cell_view cell, const column_d
         column_mask mask = column_mask::expiration;
         uint32_t ttl = cell.ttl().count();
         uint32_t expiration = cell.expiry().time_since_epoch().count();
-        disk_data_value_view<uint32_t> cell_value { cell.value() };
+        disk_string_view<uint32_t> cell_value { cell.value() };
 
         _c_stats.update_max_local_deletion_time(expiration);
         // tombstone histogram is updated with expiration time because if ttl is longer
@@ -1783,7 +1783,7 @@ void sstable::write_cell(file_writer& out, atomic_cell_view cell, const column_d
         // regular cell
 
         column_mask mask = column_mask::none;
-        disk_data_value_view<uint32_t> cell_value { cell.value() };
+        disk_string_view<uint32_t> cell_value { cell.value() };
 
         _c_stats.update_max_local_deletion_time(std::numeric_limits<int>::max());
 
@@ -1907,7 +1907,7 @@ void sstable::write_clustered_row(file_writer& out, const schema& schema, const 
             return;
         }
         assert(column_definition.is_regular());
-        atomic_cell_view cell = c.as_atomic_cell();
+        atomic_cell_view cell = c.as_atomic_cell(column_definition);
         std::vector<bytes_view> column_name = { column_definition.name() };
         index_and_write_column_name(out, clustering_key, column_name);
         write_cell(out, cell, column_definition);
@@ -1927,7 +1927,7 @@ void sstable::write_static_row(file_writer& out, const schema& schema, const row
         const auto& column_name = column_definition.name();
         auto sp = composite::static_prefix(schema);
         index_and_write_column_name(out, sp, { bytes_view(column_name) });
-        atomic_cell_view cell = c.as_atomic_cell();
+        atomic_cell_view cell = c.as_atomic_cell(column_definition);
         write_cell(out, cell, column_definition);
     });
 }
