@@ -389,10 +389,10 @@ struct counter_cell_view : basic_counter_cell_view<bytes_view> {
 
     // Reversibly applies two counter cells, at least one of them must be live.
     // Returns true iff dst was modified.
-    static bool apply_reversibly(atomic_cell_or_collection& dst, atomic_cell_or_collection& src);
+    static bool apply_reversibly(const column_definition& cdef, atomic_cell_or_collection& dst, atomic_cell_or_collection& src);
 
     // Reverts apply performed by apply_reversible().
-    static void revert_apply(atomic_cell_or_collection& dst, atomic_cell_or_collection& src);
+    static void revert_apply(const column_definition& cdef, atomic_cell_or_collection& dst, atomic_cell_or_collection& src);
 
     // Computes a counter cell containing minimal amount of data which, when
     // applied to 'b' returns the same cell as 'a' and 'b' applied together.

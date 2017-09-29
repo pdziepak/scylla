@@ -668,8 +668,8 @@ static api::timestamp_type hash_row_slice(md5_hasher& hasher,
         feed_hash(hasher, id);
         auto&& def = s.column_at(kind, id);
         if (def.is_atomic()) {
-            feed_hash(hasher, cell->as_atomic_cell(), def);
-            max = std::max(max, cell->as_atomic_cell().timestamp());
+            feed_hash(hasher, cell->as_atomic_cell(def), def);
+            max = std::max(max, cell->as_atomic_cell(def).timestamp());
         } else {
             auto&& cm = cell->as_collection_mutation();
             feed_hash(hasher, cm, def);
@@ -695,13 +695,13 @@ static void get_compacted_row_slice(const schema& s,
         } else {
             auto&& def = s.column_at(kind, id);
             if (def.is_atomic()) {
-                auto c = cell->as_atomic_cell();
+                auto c = cell->as_atomic_cell(def);
                 if (!c.is_live()) {
                     writer.add().skip();
                 } else if (def.is_counter()) {
-                    write_counter_cell(writer, slice, cell->as_atomic_cell());
+                    write_counter_cell(writer, slice, cell->as_atomic_cell(def));
                 } else {
-                    write_cell(writer, slice, cell->as_atomic_cell());
+                    write_cell(writer, slice, cell->as_atomic_cell(def));
                 }
             } else {
                 auto&& mut = cell->as_collection_mutation();
@@ -722,7 +722,7 @@ bool has_any_live_data(const schema& s, column_kind kind, const row& cells, tomb
     cells.for_each_cell_until([&] (column_id id, const atomic_cell_or_collection& cell_or_collection) {
         const column_definition& def = s.column_at(kind, id);
         if (def.is_atomic()) {
-            auto&& c = cell_or_collection.as_atomic_cell();
+            auto&& c = cell_or_collection.as_atomic_cell(def);
             if (c.is_live(tomb, now, def.is_counter())) {
                 any_live = true;
                 return stop_iteration::yes;
@@ -981,12 +981,12 @@ apply_reversibly(const column_definition& def, atomic_cell_or_collection& dst,  
     // Must be run via with_linearized_managed_bytes() context, but assume it is
     // provided via an upper layer
     if (def.is_atomic()) {
-        auto&& src_ac = src.as_atomic_cell_ref();
+        auto&& src_ac = src.as_atomic_cell_ref(def);
         if (def.is_counter()) {
-            auto did_apply = counter_cell_view::apply_reversibly(dst, src);
+            auto did_apply = counter_cell_view::apply_reversibly(def, dst, src);
             src_ac.set_revert(did_apply);
         } else {
-            if (compare_atomic_cell_for_merge(dst.as_atomic_cell(), src.as_atomic_cell()) < 0) {
+            if (compare_atomic_cell_for_merge(dst.as_atomic_cell(def), src.as_atomic_cell(def)) < 0) {
                 std::swap(dst, src);
                 src_ac.set_revert(true);
             } else {
@@ -1006,11 +1006,11 @@ revert(const column_definition& def, atomic_cell_or_collection& dst, atomic_cell
                   && std::is_nothrow_move_assignable<atomic_cell_or_collection>::value,
                   "for std::swap() to be noexcept");
     if (def.is_atomic()) {
-        auto&& ac = src.as_atomic_cell_ref();
+        auto&& ac = src.as_atomic_cell_ref(def);
         if (ac.is_revert_set()) {
             ac.set_revert(false);
             if (def.is_counter()) {
-                counter_cell_view::revert_apply(dst, src);
+                counter_cell_view::revert_apply(def, dst, src);
             } else {
                 std::swap(dst, src);
             }
@@ -1567,7 +1567,7 @@ bool row::compact_and_expire(const schema& s, column_kind kind, row_tombstone to
         bool erase = false;
         const column_definition& def = s.column_at(kind, id);
         if (def.is_atomic()) {
-            atomic_cell_view cell = c.as_atomic_cell();
+            atomic_cell_view cell = c.as_atomic_cell(def);
             auto can_erase_cell = [&] {
                 return cell.deletion_time() < gc_before && can_gc(tombstone(cell.timestamp(), cell.deletion_time()));
             };
@@ -1629,12 +1629,12 @@ row row::difference(const schema& s, column_kind kind, const row& other) const
             if (it == other_range.end() || it->first != c.first) {
                 r.append_cell(c.first, c.second);
             } else if (cdef.is_counter()) {
-                auto cell = counter_cell_view::difference(c.second.as_atomic_cell(), it->second.as_atomic_cell());
+                auto cell = counter_cell_view::difference(c.second.as_atomic_cell(cdef), it->second.as_atomic_cell(cdef));
                 if (cell) {
                     r.append_cell(c.first, std::move(*cell));
                 }
             } else if (s.column_at(kind, c.first).is_atomic()) {
-                if (compare_atomic_cell_for_merge(c.second.as_atomic_cell(), it->second.as_atomic_cell()) > 0) {
+                if (compare_atomic_cell_for_merge(c.second.as_atomic_cell(cdef), it->second.as_atomic_cell(cdef)) > 0) {
                     r.append_cell(c.first, c.second);
                 }
             } else {
@@ -1685,7 +1685,7 @@ void mutation_partition::accept(const schema& s, mutation_partition_visitor& v) 
     _static_row.for_each_cell([&] (column_id id, const atomic_cell_or_collection& cell) {
         const column_definition& def = s.static_column_at(id);
         if (def.is_atomic()) {
-            v.accept_static_cell(id, cell.as_atomic_cell());
+            v.accept_static_cell(id, cell.as_atomic_cell(def));
         } else {
             v.accept_static_cell(id, cell.as_collection_mutation());
         }
@@ -1699,7 +1699,7 @@ void mutation_partition::accept(const schema& s, mutation_partition_visitor& v) 
         dr.cells().for_each_cell([&] (column_id id, const atomic_cell_or_collection& cell) {
             const column_definition& def = s.regular_column_at(id);
             if (def.is_atomic()) {
-                v.accept_row_cell(id, cell.as_atomic_cell());
+                v.accept_row_cell(id, cell.as_atomic_cell(def));
             } else {
                 v.accept_row_cell(id, cell.as_collection_mutation());
             }

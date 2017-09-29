@@ -1798,7 +1798,7 @@ void sstable::write_clustered_row(file_writer& out, const schema& schema, const 
             return;
         }
         assert(column_definition.is_regular());
-        atomic_cell_view cell = c.as_atomic_cell();
+        atomic_cell_view cell = c.as_atomic_cell(column_definition);
         const bytes& column_name = column_definition.name();
 
         if (schema.is_compound()) {
@@ -1841,7 +1841,7 @@ void sstable::write_static_row(file_writer& out, const schema& schema, const row
             maybe_flush_pi_block(out, composite(), { bytes_view(column_name) });
             write_column_name(out, bytes_view(column_name));
         }
-        atomic_cell_view cell = c.as_atomic_cell();
+        atomic_cell_view cell = c.as_atomic_cell(column_definition);
         write_cell(out, cell, column_definition);
     });
 }
