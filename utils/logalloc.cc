@@ -1512,6 +1512,16 @@ public:
         }
     }
 
+    virtual void free(void* obj) noexcept override {
+        compaction_lock _(*this);
+        segment* seg = shard_segment_pool.containing_segment(obj);
+        assert(seg); // FIXME
+
+        auto pos = reinterpret_cast<const char*>(obj);
+        auto desc = object_descriptor::decode_backwards(pos);
+        free(obj, desc.live_size(obj));
+    }
+
     virtual void free(void* obj, size_t size) noexcept override {
         compaction_lock _(*this);
         segment* seg = shard_segment_pool.containing_segment(obj);
