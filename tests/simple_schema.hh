@@ -101,7 +101,7 @@ public:
         if (t == api::missing_timestamp) {
             t = new_timestamp();
         }
-        m.set_clustered_cell(key, _v_def, atomic_cell::make_live(t, data_value(v).serialize()));
+        m.set_clustered_cell(key, _v_def, atomic_cell::make_live(*_v_def.type, t, data_value(v).serialize()));
         return t;
     }
 
@@ -120,7 +120,7 @@ public:
     mutation_fragment make_row(const clustering_key& key, sstring v) {
         auto row = clustering_row(key);
         row.cells().apply(*_s->get_column_definition(to_bytes(sstring("v"))),
-            atomic_cell::make_live(new_timestamp(), data_value(v).serialize()));
+            atomic_cell::make_live(*_v_def.type, new_timestamp(), data_value(v).serialize()));
         return mutation_fragment(std::move(row));
     }
 

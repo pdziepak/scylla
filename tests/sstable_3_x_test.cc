@@ -537,13 +537,10 @@ SEASTAR_TEST_CASE(test_write_collection_wide_update) {
         api::timestamp_type ts = api::new_timestamp();
         gc_clock::time_point tp = gc_clock::now();
         mut.partition().apply_insert(*s, clustering_key::make_empty(), ts);
-        set_type_impl::mutation set_values {
-            {ts - 1, tp}, // tombstone
-            {
-                {int32_type->decompose(2), atomic_cell::make_live(ts, bytes_view{})},
-                {int32_type->decompose(3), atomic_cell::make_live(ts, bytes_view{})},
-            }
-        };
+        set_type_impl::mutation set_values;
+        set_values.tomb = tombstone {ts - 1, tp};
+        set_values.cells.emplace_back(int32_type->decompose(2), atomic_cell::make_live(*bytes_type, ts, bytes_view{}));
+        set_values.cells.emplace_back(int32_type->decompose(3), atomic_cell::make_live(*bytes_type, ts, bytes_view{}));
 
         mut.set_clustered_cell(clustering_key::make_empty(), *s->get_column_definition("col"), set_of_ints_type->serialize_mutation_form(set_values));
         mt->apply(std::move(mut));
@@ -581,12 +578,8 @@ SEASTAR_TEST_CASE(test_write_collection_incremental_update) {
         mutation mut{s, key};
 
         api::timestamp_type ts = api::new_timestamp();
-        set_type_impl::mutation set_values {
-            {}, // tombstone
-            {
-                {int32_type->decompose(2), atomic_cell::make_live(ts, bytes_view{})},
-            }
-        };
+        set_type_impl::mutation set_values;
+        set_values.cells.emplace_back(int32_type->decompose(2), atomic_cell::make_live(*bytes_type, ts, bytes_view{}));
 
         mut.set_clustered_cell(clustering_key::make_empty(), *s->get_column_definition("col"), set_of_ints_type->serialize_mutation_form(set_values));
         mt->apply(std::move(mut));
