@@ -1193,7 +1193,7 @@ make_map_mutation(const Map& map,
 
         for (auto&& entry : map) {
             auto te = f(entry);
-            mut.cells.emplace_back(ktyp->decompose(te.first), atomic_cell::make_live(timestamp, vtyp->decompose(te.second)));
+            mut.cells.emplace_back(ktyp->decompose(te.first), atomic_cell::make_live(*vtyp, timestamp, vtyp->decompose(te.second)));
         }
 
         auto col_mut = column_type->serialize_mutation_form(std::move(mut));
@@ -1202,7 +1202,7 @@ make_map_mutation(const Map& map,
         map_type_impl::native_type tmp;
         tmp.reserve(map.size());
         std::transform(map.begin(), map.end(), std::inserter(tmp, tmp.end()), f);
-        return atomic_cell::make_live(timestamp, column_type->decompose(make_map_value(column_type, std::move(tmp))));
+        return atomic_cell::make_live(*column.type, timestamp, column_type->decompose(make_map_value(column_type, std::move(tmp))));
     }
 }
 
@@ -1360,7 +1360,7 @@ make_list_mutation(const std::vector<T, Args...>& values,
             auto uuid = utils::UUID_gen::get_time_UUID_bytes();
             m.cells.emplace_back(
                 bytes(reinterpret_cast<const int8_t*>(uuid.data()), uuid.size()),
-                atomic_cell::make_live(timestamp, vtyp->decompose(std::move(dv))));
+                atomic_cell::make_live(*vtyp, timestamp, vtyp->decompose(std::move(dv))));
         }
 
         auto list_mut = column_type->serialize_mutation_form(std::move(m));
@@ -1369,7 +1369,7 @@ make_list_mutation(const std::vector<T, Args...>& values,
         list_type_impl::native_type tmp;
         tmp.reserve(values.size());
         std::transform(values.begin(), values.end(), std::back_inserter(tmp), f);
-        return atomic_cell::make_live(timestamp, column_type->decompose(make_list_value(column_type, std::move(tmp))));
+        return atomic_cell::make_live(*column.type, timestamp, column_type->decompose(make_list_value(column_type, std::move(tmp))));
     }
 }
 

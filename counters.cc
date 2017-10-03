@@ -200,8 +200,8 @@ void counter_cell_view::revert_apply(const column_definition& cdef, atomic_cell_
     if (dst.as_atomic_cell(cdef).is_counter_update()) {
         auto src_v = src.as_atomic_cell(cdef).counter_update_value();
         auto dst_v = dst.as_atomic_cell(cdef).counter_update_value();
-        dst = atomic_cell::make_live(dst.as_atomic_cell(cdef).timestamp(),
-                                     long_type->decompose(dst_v - src_v));
+        dst = atomic_cell::make_live_counter_update(dst.as_atomic_cell(cdef).timestamp(),
+                                                    dst_v - src_v);
     } else if (src.as_atomic_cell(cdef).is_counter_in_place_revert_set()) {
         revert_in_place_apply(cdef, dst, src);
     } else {
@@ -244,7 +244,7 @@ stdx::optional<atomic_cell> counter_cell_view::difference(atomic_cell_view a, at
     if (!result.empty()) {
         diff = result.build(std::max(a.timestamp(), b.timestamp()));
     } else if (a.timestamp() > b.timestamp()) {
-        diff = atomic_cell::make_live(a.timestamp(), bytes_view());
+        diff = atomic_cell::make_live(*counter_type, a.timestamp(), bytes_view());
     }
     return diff;
 }

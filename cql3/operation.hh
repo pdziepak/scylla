@@ -91,8 +91,8 @@ public:
         return params.make_dead_cell();
     }
 
-    atomic_cell make_cell(bytes_view value, const update_parameters& params) const {
-        return params.make_cell(value);
+    atomic_cell make_cell(const abstract_type& type, bytes_view value, const update_parameters& params) const {
+        return params.make_cell(type, value);
     }
 
     atomic_cell make_counter_update_cell(int64_t delta, const update_parameters& params) const {
