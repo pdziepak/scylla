@@ -361,7 +361,7 @@ static void add_cells_to_view(const schema& base, const schema& view, const row&
     base_cells.for_each_cell([&] (column_id id, const atomic_cell_or_collection& c) {
         auto* view_col = view_column(base, view, id);
         if (view_col && !view_col->is_primary_key()) {
-            view_cells.append_cell(view_col->id, c);
+            view_cells.append_cell(view_col->id, c.copy(*view_col->type));
         }
     });
 }
@@ -677,7 +677,7 @@ future<stop_iteration> view_update_builder::on_results() {
     if (tombstone && _existing && !_existing->is_end_of_partition()) {
         // We don't care if it's a range tombstone, as we're only looking for existing entries that get deleted
         if (_existing->is_clustering_row()) {
-            auto& existing = _existing->as_clustering_row();
+            auto existing = clustering_row(*_schema, _existing->as_clustering_row());
             auto update = clustering_row(existing.key(), row_tombstone(std::move(tombstone)), row_marker(), ::row());
             generate_update(std::move(update), { std::move(existing) });
         }
