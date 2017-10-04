@@ -141,14 +141,14 @@ future<mutation> generate_clustered(bytes&& key) {
 inline auto clustered_row(mutation& mutation, const schema& s, std::vector<bytes>&& v) {
     auto exploded = exploded_clustering_prefix(std::move(v));
     auto clustering_pair = clustering_key::from_clustering_prefix(s, exploded);
-    return mutation.partition().clustered_row(s, clustering_pair);
+    return deletable_row(s, mutation.partition().clustered_row(s, clustering_pair));
 }
 
 SEASTAR_TEST_CASE(complex_sst1_k1) {
     return generate_clustered<1>("key1").then([] (auto&& mutation) {
         auto s = complex_schema();
 
-        auto sr = mutation.partition().static_row();
+        auto& sr = mutation.partition().static_row();
         match_live_cell(sr, *s, "static_obj", data_value(to_bytes("static_value")));
 
         auto row1 = clustered_row(mutation, *s, {"cl1.1", "cl2.1"});
@@ -177,7 +177,7 @@ SEASTAR_TEST_CASE(complex_sst1_k2) {
     return generate_clustered<1>("key2").then([] (auto&& mutation) {
         auto s = complex_schema();
 
-        auto sr = mutation.partition().static_row();
+        auto& sr = mutation.partition().static_row();
         match_live_cell(sr, *s, "static_obj", data_value(to_bytes("static_value")));
         auto static_set = match_collection(sr, *s, "static_collection", tombstone(deletion_time{1431451390, 1431451390225257l}));
         match_collection_element<status::live>(static_set.cells[0], to_bytes("1"), bytes_opt{});
@@ -226,7 +226,7 @@ SEASTAR_TEST_CASE(complex_sst2_k2) {
     return generate_clustered<2>("key2").then([] (auto&& mutation) {
         auto s = complex_schema();
 
-        auto sr = mutation.partition().static_row();
+        auto& sr = mutation.partition().static_row();
         match_dead_cell(sr, *s, "static_obj");
         auto static_set = match_collection(sr, *s, "static_collection", tombstone(deletion_time{0, api::missing_timestamp}));
         match_collection_element<status::dead>(static_set.cells[0], to_bytes("1"), bytes_opt{});
@@ -255,7 +255,7 @@ SEASTAR_TEST_CASE(complex_sst2_k3) {
     return generate_clustered<2>("key3").then([] (auto&& mutation) {
         auto s = complex_schema();
 
-        auto sr = mutation.partition().static_row();
+        auto& sr = mutation.partition().static_row();
         match_expiring_cell(sr, *s, "static_obj", data_value(to_bytes("static_value_3")), 1431451394597062l, 1431537794);
 
         auto row1 = clustered_row(mutation, *s, {"tcl1.1", "tcl2.1"});
@@ -293,7 +293,7 @@ SEASTAR_TEST_CASE(complex_sst3_k2) {
     return generate_clustered<3>("key2").then([] (auto&& mutation) {
         auto s = complex_schema();
 
-        auto sr = mutation.partition().static_row();
+        auto& sr = mutation.partition().static_row();
         match_live_cell(sr, *s, "static_obj", data_value(to_bytes("final_static")));
 
         auto row = clustered_row(mutation, *s, {"kcl1.1", "kcl2.1"});
@@ -449,7 +449,7 @@ SEASTAR_TEST_CASE(compact_storage_sparse_read) {
             return read_mutation_from_flat_mutation_reader(*rd).then([sstp, s, &key, rd] (auto mutation) {
                 BOOST_REQUIRE(mutation);
                 auto& mp = mutation->partition();
-                auto row = mp.clustered_row(*s, clustering_key::make_empty());
+                auto& row = mp.clustered_row(*s, clustering_key::make_empty());
                 match_live_cell(row.cells(), *s, "cl1", data_value(to_bytes("cl1")));
                 match_live_cell(row.cells(), *s, "cl2", data_value(to_bytes("cl2")));
                 return make_ready_future<>();
@@ -469,7 +469,7 @@ SEASTAR_TEST_CASE(compact_storage_simple_dense_read) {
                 auto exploded = exploded_clustering_prefix({"cl1"});
                 auto clustering = clustering_key::from_clustering_prefix(*s, exploded);
 
-                auto row = mp.clustered_row(*s, clustering);
+                auto& row = mp.clustered_row(*s, clustering);
                 match_live_cell(row.cells(), *s, "cl2", data_value(to_bytes("cl2")));
                 return make_ready_future<>();
             });
@@ -488,7 +488,7 @@ SEASTAR_TEST_CASE(compact_storage_dense_read) {
                 auto exploded = exploded_clustering_prefix({"cl1", "cl2"});
                 auto clustering = clustering_key::from_clustering_prefix(*s, exploded);
 
-                auto row = mp.clustered_row(*s, clustering);
+                auto& row = mp.clustered_row(*s, clustering);
                 match_live_cell(row.cells(), *s, "cl3", data_value(to_bytes("cl3")));
                 return make_ready_future<>();
             });
@@ -513,10 +513,10 @@ SEASTAR_TEST_CASE(broken_ranges_collection) {
                 if (!mut) {
                     return stop_iteration::yes;
                 } else if (key_equal("127.0.0.1")) {
-                    auto row = mut->partition().clustered_row(*s, clustering_key::make_empty());
+                    auto& row = mut->partition().clustered_row(*s, clustering_key::make_empty());
                     match_absent(row.cells(), *s, "tokens");
                 } else if (key_equal("127.0.0.3")) {
-                    auto row = mut->partition().clustered_row(*s, clustering_key::make_empty());
+                    auto& row = mut->partition().clustered_row(*s, clustering_key::make_empty());
                     auto tokens = match_collection(row.cells(), *s, "tokens", tombstone(deletion_time{0x55E5F2D5, 0x051EB3FC99715Dl }));
                     match_collection_element<status::live>(tokens.cells[0], to_bytes("-8180144272884242102"), bytes_opt{});
                 } else {
@@ -608,7 +608,7 @@ SEASTAR_TEST_CASE(tombstone_in_tombstone) {
                                     tombstone(1459334681228103LL, it->tomb.deletion_time))));
                     auto& rows = mut->partition().clustered_rows();
                     BOOST_REQUIRE(rows.calculate_size() == 1);
-                    for (auto e : rows) {
+                    for (auto& e : rows) {
                         BOOST_REQUIRE(e.key().equal(*s, make_ckey("aaa", "bbb")));
                         BOOST_REQUIRE(e.row().deleted_at().tomb().timestamp == 1459334681244989LL);
                     }
@@ -753,7 +753,7 @@ SEASTAR_TEST_CASE(tombstone_in_tombstone2) {
                     BOOST_REQUIRE(it == rts.end());
 
                     BOOST_REQUIRE(rows.calculate_size() == 1);
-                    for (auto e : rows) {
+                    for (auto& e : rows) {
                         BOOST_REQUIRE(e.key().equal(*s, make_ckey("aaa", "bbb", "ccc")));
                         BOOST_REQUIRE(e.row().deleted_at().tomb().timestamp == 1459438519958850LL);
                     }
