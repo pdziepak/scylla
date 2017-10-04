@@ -166,7 +166,7 @@ public:
     // Can be called only when cursor is valid and pointing at a row.
     mutation_fragment row() const {
         auto it = _current_row.begin();
-        auto mf = mutation_fragment(clustering_row(*it->it));
+        auto mf = mutation_fragment(clustering_row(_schema, *it->it));
         auto& cr = mf.as_mutable_clustering_row();
         for (++it; it != _current_row.end(); ++it) {
             cr.apply(_schema, *it->it);

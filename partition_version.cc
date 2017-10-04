@@ -107,7 +107,9 @@ inline Result squashed(const partition_version_ref& v, Map&& map, Reduce&& reduc
 
 row partition_snapshot::static_row() const {
     return ::squashed<row>(version(),
-                         [] (const mutation_partition& mp) -> const row& { return mp.static_row(); },
+                         [this] (const mutation_partition& mp) {
+                             return row(*_schema, column_kind::static_column, mp.static_row());
+                         },
                          [this] (row& a, const row& b) { a.apply(*_schema, column_kind::static_column, b); });
 }
 
@@ -119,7 +121,7 @@ tombstone partition_snapshot::partition_tombstone() const {
 
 mutation_partition partition_snapshot::squashed() const {
     return ::squashed<mutation_partition>(version(),
-                               [] (const mutation_partition& mp) -> const mutation_partition& { return mp; },
+                               [this] (const mutation_partition& mp) { return mutation_partition(*_schema, mp); },
                                [this] (mutation_partition& a, const mutation_partition& b) { a.apply(*_schema, b, *_schema); });
 }
 
@@ -213,7 +215,7 @@ void partition_entry::apply(const schema& s, const mutation_partition& mp, const
     if (!_snapshot) {
         _version->partition().apply(s, mp, mp_schema);
     } else {
-        mutation_partition mp1 = mp;
+        auto mp1 = mutation_partition(s, mp);
         if (s.version() != mp_schema.version()) {
             mp1.upgrade(mp_schema, s);
         }
@@ -297,7 +299,7 @@ public:
         // due to the fact that all rows are continuous.
         for (version& v : _current_row) {
             if (!v.can_move) {
-                consumer(deletable_row(v.current_row->row()));
+                consumer(deletable_row(_schema, v.current_row->row()));
             } else {
                 consumer(std::move(v.current_row->row()));
             }

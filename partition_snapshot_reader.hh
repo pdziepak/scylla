@@ -164,7 +164,7 @@ private:
         for (auto&& v : _snapshot->versions()) {
             if (!v.partition().static_row().empty()) {
                 if (!sr) {
-                    sr = mutation_fragment(static_row(v.partition().static_row()));
+                    sr = mutation_fragment(static_row(*_schema, v.partition().static_row()));
                 } else {
                     sr->as_mutable_static_row().apply(*_schema, v.partition().static_row());
                 }
@@ -183,7 +183,7 @@ private:
             if (e.dummy()) {
                 continue;
             }
-            clustering_row result = e;
+            auto result = clustering_row(*_schema, e);
             while (has_more_rows() && _eq(peek_row().position(), result.position())) {
                 result.apply(*_schema, pop_clustering_row());
             }

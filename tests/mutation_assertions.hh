@@ -160,7 +160,7 @@ public:
         return *this;
     }
 
-    streamed_mutation_assertions& produces(mutation_fragment mf) {
+    streamed_mutation_assertions& produces(const mutation_fragment& mf) {
         auto mfopt = _sm().get0();
         if (!mfopt) {
             BOOST_FAIL(sprint("Expected mutation fragment %s, got end of stream", mf));

@@ -1359,7 +1359,7 @@ SEASTAR_TEST_CASE(test_slicing_mutation) {
 
     auto test_slicing = [&] (query::clustering_row_ranges ranges, std::vector<int> expected_rows) {
         mutation_partition mp1(m.partition(), *s, ranges);
-        auto mp_temp = m.partition();
+        auto mp_temp = mutation_partition(*s, m.partition());
         mutation_partition mp2(std::move(mp_temp), *s, ranges);
 
         BOOST_REQUIRE(mp1.equal(*s, mp2));

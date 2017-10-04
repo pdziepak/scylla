@@ -98,7 +98,7 @@ public:
     cache_entry(schema_ptr s, const dht::decorated_key& key, const mutation_partition& p)
         : _schema(std::move(s))
         , _key(key)
-        , _pe(p)
+        , _pe(mutation_partition(*s, p))
     {
         _pe.version()->partition().ensure_last_dummy(*_schema);
     }

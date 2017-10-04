@@ -338,7 +338,7 @@ void cache_streamed_mutation::maybe_add_to_cache(const clustering_row& cr) {
         // They're currently buried in the heap, but you could keep a vector of
         // iterators per each version in addition to the heap.
         auto new_entry = alloc_strategy_unique_ptr<rows_entry>(
-            current_allocator().construct<rows_entry>(cr.key(), cr.tomb(), cr.marker(), cr.cells()));
+            current_allocator().construct<rows_entry>(*_schema, cr.key(), cr.tomb(), cr.marker(), cr.cells()));
         new_entry->set_continuous(false);
         auto it = _next_row.has_up_to_date_row_from_latest_version()
                   ? _next_row.get_iterator_in_latest_version() : mp.clustered_rows().lower_bound(cr.key(), less);
