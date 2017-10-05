@@ -94,7 +94,7 @@ private:
     template<typename T>
     T read(offset off) const {
         T value;
-        std::copy_n(_base + static_cast<unsigned>(off), sizeof(T), reinterpret_cast<signed char*>(&value));
+        std::copy_n(_base + static_cast<unsigned>(off), sizeof(T), reinterpret_cast<uint8_t*>(&value));
         return value;
     }
 public:
@@ -346,7 +346,7 @@ public:
     }
 
     size_t shard_count() const {
-        return _cell.value().size() / counter_shard_view::size;
+        abort(); //return _cell.value().size() / counter_shard_view::size;
     }
 protected:
     // ac must be a live counter cell

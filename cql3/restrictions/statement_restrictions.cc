@@ -431,8 +431,9 @@ static bytes_view_opt do_get_value(const schema& schema,
                 return stdx::nullopt;
             }
             assert(cdef.is_atomic());
-            auto c = cell->as_atomic_cell(cdef);
-            return c.is_dead(now) ? stdx::nullopt : bytes_view_opt(c.value());
+            //auto c = cell->as_atomic_cell(cdef);
+            abort();
+            //return c.is_dead(now) ? stdx::nullopt : bytes_view_opt(c.value());
     }
 }
 
@@ -546,7 +547,7 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
                 continue;
             }
             auto found = std::find_if(elements.begin(), end, [&] (auto&& element) {
-                return element_type->compare(element.second.value(), *val) == 0;
+                return element_type->compare(element.second.value().linearize(), *val) == 0;
             });
             if (found == end) {
                 return false;
@@ -573,7 +574,7 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
             auto found = std::find_if(elements.begin(), end, [&] (auto&& element) {
                 return map_key_type->compare(element.first, *map_key) == 0;
             });
-            if (found == end || element_type->compare(found->second.value(), *map_value) != 0) {
+            if (found == end || element_type->compare(found->second.value().linearize(), *map_value) != 0) {
                 return false;
             }
         }

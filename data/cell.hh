@@ -55,8 +55,6 @@ struct cell {
         class live;
         class expiring;
         class counter_update;
-        class revert;
-        class counter_in_place_revert;
         class external_data;
 
         class ttl;
@@ -86,8 +84,6 @@ struct cell {
         tags::expiring,
         tags::counter_update,
         tags::empty,
-        tags::revert,
-        tags::counter_in_place_revert,
         tags::external_data
     >;
     using value_data_variant = imr::variant<tags::value_data,
@@ -484,6 +480,19 @@ public:
         }
         return it1 == end() && it2 == other.end();
     }
+    bool operator==(bytes_view bv) const noexcept {
+        bool equal = true;
+        for_each([&] (bytes_view fragment) {
+            if (fragment.size() > bv.size()) {
+                equal = false;
+            } else {
+                auto bv_frag = bv.substr(fragment.size());
+                equal = equal && fragment == bv_frag;
+                bv.remove_prefix(fragment.size());
+            }
+        });
+        return equal && bv.empty();
+    }
 
     size_t size() const noexcept {
         return _first_chunk.size() + _remaining_size;
@@ -530,6 +539,11 @@ public:
 };
 
 
+inline std::ostream& operator<<(std::ostream& os, value_view vv)
+{
+    return os << vv.linearize();
+}
+
 template<const_view is_const>
 class cell::basic_atomic_cell_view {
 public:
@@ -549,6 +563,13 @@ public:
 
     const uint8_t* raw_pointer() const { return _view.raw_pointer() - flags::size_when_serialized(); }
 
+    bytes_view serialize() const noexcept {
+        assert(!_flags.template get<tags::external_data>());
+        auto ptr = raw_pointer();
+        auto len = 0;//structure::serialized_object_size(ptr, _context);
+        return bytes_view(reinterpret_cast<const int8_t*>(ptr), len);
+    }
+
     bool is_live() const noexcept {
         return _flags.template get<tags::live>();
     }
@@ -557,19 +578,6 @@ public:
     }
     bool is_counter_update() const noexcept {
         return _flags.template get<tags::counter_update>();
-    }
-    bool is_revert_set() const noexcept {
-        return _flags.template get<tags::revert>();
-    }
-    bool is_counter_in_place_revert_set() const noexcept {
-        return _flags.template get<tags::counter_in_place_revert>();
-    }
-
-    void set_revert(bool flag) noexcept {
-        return _flags.template set<tags::revert>(flag);
-    }
-    void set_counter_in_place_revert(bool flag) noexcept {
-        return _flags.template set<tags::counter_in_place_revert>(flag);
     }
 
     api::timestamp_type timestamp() const noexcept {

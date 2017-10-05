@@ -315,7 +315,8 @@ deletable_row& view_updates::get_view_row(const partition_key& base_key, const c
         default:
             auto& c = update.cells().cell_at(base_col->id);
             if (base_col->is_atomic()) {
-                return c.as_atomic_cell(cdef).value();
+                abort();
+                //return c.as_atomic_cell(cdef).value();
             }
             return c.as_collection_mutation().data;
         }

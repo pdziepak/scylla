@@ -31,7 +31,7 @@ namespace utils {
 
 template<typename Structure>
 class object {
-    uint8_t* _data = nullptr;
+    uint8_t* _data = nullptr; // FIXME: unique_ptr
 private:
     explicit object(uint8_t* ptr) noexcept : _data(ptr) { }
 public:
@@ -56,6 +56,14 @@ public:
 
     uint8_t* get() noexcept { return _data; }
     const uint8_t* get() const noexcept { return _data; }
+
+    //////////////////////////
+    static object from_raw_bytes(bytes_view v) {//, allocation_strategy::migrate_fn migrate = &imr::alloc::default_lsa_migrate_fn<Structure>::migrate_fn) {
+        auto ptr = static_cast<uint8_t*>(current_allocator().alloc(nullptr/*migrate*/, v.size() + 7, 1));
+        std::copy(v.begin(), v.end(), ptr);
+        return object { ptr };
+    }
+    ////////////////////////////
 
     template<typename Serializer>
     static object make(Serializer&& serializer,

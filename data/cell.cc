@@ -27,5 +27,3 @@ thread_local imr::alloc::lsa_migrate_fn<data::cell::external_last_chunk,
 thread_local imr::alloc::context_factory<data::cell::chunk_context> ecc;
 thread_local imr::alloc::lsa_migrate_fn<data::cell::external_chunk,
         imr::alloc::context_factory<data::cell::chunk_context>> data::cell::lsa_chunk_migrate_fn(ecc);
-
-static thread_local data::type_imr_state no_type_imr_state(data::type_info::make_variable_size());
