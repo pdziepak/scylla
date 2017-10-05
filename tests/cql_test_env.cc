@@ -213,7 +213,7 @@ public:
             if (!col_def->type->is_multi_cell()) {
                 auto c = cell->as_atomic_cell(*col_def);
                 assert(c.is_live());
-                actual = { c.value().begin(), c.value().end() };
+                actual = c.value().linearize();
             } else {
                 auto c = cell->as_collection_mutation();
                 auto type = dynamic_pointer_cast<const collection_type_impl>(col_def->type);

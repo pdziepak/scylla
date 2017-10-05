@@ -44,7 +44,7 @@ template<typename Writer>
 auto write_live_cell(Writer&& writer, atomic_cell_view c)
 {
     return std::move(writer).write_created_at(c.timestamp())
-                            .write_value(c.value())
+                            .write_value(c.value().linearize())
                         .end_live_cell();
 }
 
@@ -83,7 +83,7 @@ auto write_expiring_cell(Writer&& writer, atomic_cell_view c)
                             .write_expiry(c.expiry())
                             .start_c()
                                 .write_created_at(c.timestamp())
-                                .write_value(c.value())
+                                .write_value(c.value().linearize())
                             .end_c()
                         .end_expiring_cell();
 }

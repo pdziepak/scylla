@@ -606,7 +606,7 @@ void write_cell(RowWriter& w, const query::partition_slice& slice, ::atomic_cell
         } else {
             return std::move(wr).skip_expiry();
         }
-    }().write_value(c.value());
+    }().write_value(c.value().linearize());
     [&, wr = std::move(after_value)] () mutable {
         if (slice.options.contains<query::partition_slice::option::send_ttl>() && c.is_live_and_has_ttl()) {
             return std::move(wr).write_ttl(c.ttl());

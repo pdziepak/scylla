@@ -191,7 +191,7 @@ bool counter_cell_view::apply_reversibly(const column_definition& cdef, atomic_c
             });
 
     auto cell = result.build(std::max(dst_ac.timestamp(), src_ac.timestamp()));
-    src = std::exchange(dst, atomic_cell_or_collection(cell));
+    src = std::exchange(dst, atomic_cell_or_collection(std::move(cell)));
     return true;
 }
 
