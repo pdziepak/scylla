@@ -412,6 +412,14 @@ inline void write(file_writer& out, const disk_string_view<Size>& s) {
     write(out, len, s.value);
 }
 
+template<typename SizeType>
+inline void write(file_writer& out, const disk_data_value_view<SizeType>& v) {
+    SizeType length;
+    check_truncate_and_assign(length, v.value.size());
+    write(out, length);
+    v.value.for_each([&] (auto chk) { write(out, chk); });
+}
+
 // We cannot simply read the whole array at once, because we don't know its
 // full size. We know the number of elements, but if we are talking about
 // disk_strings, for instance, we have no idea how much of the stream each
@@ -1762,7 +1770,7 @@ void sstable::write_cell(file_writer& out, atomic_cell_view cell, const column_d
         column_mask mask = column_mask::expiration;
         uint32_t ttl = cell.ttl().count();
         uint32_t expiration = cell.expiry().time_since_epoch().count();
-        disk_string_view<uint32_t> cell_value { cell.value() };
+        disk_data_value_view<uint32_t> cell_value { cell.value() };
 
         _c_stats.update_max_local_deletion_time(expiration);
         // tombstone histogram is updated with expiration time because if ttl is longer
@@ -1775,7 +1783,7 @@ void sstable::write_cell(file_writer& out, atomic_cell_view cell, const column_d
         // regular cell
 
         column_mask mask = column_mask::none;
-        disk_string_view<uint32_t> cell_value { cell.value() };
+        disk_data_value_view<uint32_t> cell_value { cell.value() };
 
         _c_stats.update_max_local_deletion_time(std::numeric_limits<int>::max());
 
