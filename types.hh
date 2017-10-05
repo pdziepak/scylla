@@ -24,6 +24,7 @@
 #include <experimental/optional>
 #include <boost/functional/hash.hpp>
 #include <iosfwd>
+#include "data/cell.hh"
 #include <sstream>
 
 #include "core/sstring.hh"
@@ -414,9 +415,11 @@ class user_type_impl;
 // Unsafe to access across shards unless otherwise noted.
 class abstract_type : public enable_shared_from_this<abstract_type> {
     sstring _name;
+    data::type_imr_state _imr_state;
 public:
-    abstract_type(sstring name) : _name(name) {}
+    abstract_type(sstring name, data::type_info ti) : _name(name), _imr_state(ti) {}
     virtual ~abstract_type() {}
+    const data::type_imr_state& imr_state() const { return _imr_state; }
     virtual void serialize(const void* value, bytes::iterator& out) const = 0;
     void serialize(const data_value& value, bytes::iterator& out) const {
         return serialize(get_value_ptr(value), out);
@@ -767,7 +770,7 @@ public:
 
 protected:
     explicit collection_type_impl(sstring name, const kind& k)
-            : abstract_type(std::move(name)), _kind(k) {}
+            : abstract_type(std::move(name), data::type_info::make_collection()), _kind(k) {}
     virtual sstring cql3_type_name() const = 0;
 public:
     // representation of a collection mutation, key/value pairs, value is a mutation itself
@@ -895,7 +898,7 @@ class reversed_type_impl : public abstract_type {
     friend struct shared_ptr_make_helper<reversed_type_impl, true>;
 
     data_type _underlying_type;
-    reversed_type_impl(data_type t) : abstract_type("org.apache.cassandra.db.marshal.ReversedType(" + t->name() + ")"), _underlying_type(t) {}
+    reversed_type_impl(data_type t) : abstract_type("org.apache.cassandra.db.marshal.ReversedType(" + t->name() + ")", t->imr_state().type_info()), _underlying_type(t) {}
 protected:
     virtual bool is_value_compatible_with_internal(const abstract_type& other) const {
         return _underlying_type->is_value_compatible_with(*(other.underlying_type()));
