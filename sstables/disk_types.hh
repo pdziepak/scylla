@@ -29,6 +29,7 @@
 #include <unordered_map>
 #include <type_traits>
 #include <deque>
+#include "data/cell.hh"
 
 namespace sstables {
 
@@ -55,6 +56,11 @@ struct disk_string {
 template <typename Size>
 struct disk_string_view {
     bytes_view value;
+};
+
+template<typename SizeType>
+struct disk_data_value_view {
+    data::value_view value;
 };
 
 template <typename Size, typename Members>
