@@ -68,6 +68,12 @@ GCC6_CONCEPT(
  */
 class flat_mutation_reader final {
 public:
+    // Causes the stream to emit mutation fragments inside a partition to be
+    // emitted in a reversed (i.e. descending) order. Range tombstones are,
+    // additionally, flipped (after they are reordered).
+    // Ordering of partitions themselves remains unchanged.
+    using consume_reversed_partitions = seastar::bool_class<class consume_reversed_partitions_tag>;
+
     class impl {
         circular_buffer<mutation_fragment> _buffer;
         size_t _buffer_size = 0;
@@ -89,6 +95,8 @@ public:
         }
         void forward_buffer_to(const position_in_partition& pos);
         void clear_buffer_to_next_partition();
+    private:
+        static flat_mutation_reader reverse_partitions(flat_mutation_reader::impl&);
     public:
         impl(schema_ptr s) : _schema(std::move(s)) { }
         virtual ~impl() {}
@@ -229,7 +237,12 @@ public:
     GCC6_CONCEPT(
         requires FlattenedConsumer<Consumer>()
     )
-    auto consume(Consumer consumer) {
+    auto consume(Consumer consumer, consume_reversed_partitions reversed = consume_reversed_partitions::no) {
+        if (reversed) {
+            return do_with(impl::reverse_partitions(*_impl), [&] (auto& reversed_partition_stream) {
+                return reversed_partition_stream._impl->consume(std::move(consumer));
+            });
+        }
         return _impl->consume(std::move(consumer));
     }
 
