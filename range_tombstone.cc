@@ -65,10 +65,15 @@ void range_tombstone_accumulator::update_current_tombstone() {
 }
 
 void range_tombstone_accumulator::drop_unneeded_tombstones(const clustering_key_prefix& ck, int w) {
-    auto cmp = [&] (bound_view bv, const clustering_key_prefix& ck, int w) {
-        return _reversed ? _cmp(ck, w, bv.prefix, weight(bv.kind)) : _cmp(bv.prefix, weight(bv.kind), ck, w);
+    auto cmp = [&] (const range_tombstone& rt, const clustering_key_prefix& ck, int w) {
+        if (_reversed) {
+            auto bv = rt.start_bound();
+            return _cmp(ck, w, bv.prefix, weight(bv.kind));
+        }
+        auto bv = rt.end_bound();
+        return _cmp(bv.prefix, weight(bv.kind), ck, w);
     };
-    while (!_range_tombstones.empty() && cmp(_range_tombstones.begin()->end_bound(), ck, w)) {
+    while (!_range_tombstones.empty() && cmp(*_range_tombstones.begin(), ck, w)) {
         _range_tombstones.pop_front();
     }
     update_current_tombstone();
@@ -79,7 +84,7 @@ void range_tombstone_accumulator::apply(range_tombstone rt) {
     _current_tombstone.apply(rt.tomb);
 
     auto cmp = [&] (const range_tombstone& rt1, const range_tombstone& rt2) {
-        return _reversed ? _cmp(rt2.end_bound(), rt1.end_bound()) : _cmp(rt1.end_bound(), rt2.end_bound());
+        return _reversed ? _cmp(rt2.start_bound(), rt1.start_bound()) : _cmp(rt1.end_bound(), rt2.end_bound());
     };
     _range_tombstones.insert(boost::upper_bound(_range_tombstones, rt, cmp), std::move(rt));
 }
