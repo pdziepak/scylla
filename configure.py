@@ -290,6 +290,7 @@ scylla_tests = [
 ]
 
 perf_tests = [
+    'tests/perf/perf_mutation_readers'
 ]
 
 apps = [
