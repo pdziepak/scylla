@@ -139,6 +139,227 @@ static mutation make_mutation_with_key(schema_ptr s, const char* key) {
     return make_mutation_with_key(s, dht::global_partitioner().decorate_key(*s, partition_key::from_single_value(*s, bytes(key))));
 }
 
+namespace mutation_readers {
+
+template<typename FragmentConsumer, typename EOSConsumer>
+auto make_output(FragmentConsumer&& frag_fn, EOSConsumer&& eos_fn)
+{
+    class output {
+        FragmentConsumer _fragment;
+        EOSConsumer _eos;
+    public:
+        output(FragmentConsumer frag, EOSConsumer eos)
+            : _fragment(std::move(frag)), _eos(std::move(eos)) { }
+        void emit(mutation_fragment&& mf) {
+            _fragment(std::move(mf));
+        }
+        void emit_end_of_stream() {
+            _eos();
+        }
+    };
+    return output(std::forward<FragmentConsumer>(frag_fn),
+                  std::forward<EOSConsumer>(eos_fn));
+}
+
+template<typename Input, typename Impl>
+class intermediate {
+    Input _input;
+protected:
+    void input_to_next_partition() {
+        _input.next_partition();
+    }
+
+    template<typename Output>
+    void process_one(mutation_fragment&& in, Output& out) {
+        out.emit(std::move(in));
+    }
+    template<typename Output>
+    void process_end_of_stream(Output& out) {
+        out.emit_end_of_stream();
+    }
+private:
+    Impl& impl() { return *static_cast<Impl*>(this); }
+    const Impl& impl() const { return *static_cast<Impl*>(this); }
+public:
+    schema_ptr schema() {
+        return _input.schema();
+    }
+
+    void suspend_consume() {
+        _input.suspend_consume();
+    }
+
+    void next_partition() {
+        _input.next_partition();
+    }
+
+    bool needs_refill() const {
+        return _input.needs_refill();
+    }
+    future<> refill(db::timeout_clock::time_point timeout) {
+        return _input.refill(timeout);
+    }
+public:
+    explicit intermediate(Input&& in) : _input(std::move(in)) { }
+
+    template<typename Output>
+    void emit_fragments(Output out) {
+        _input.emit_fragments(make_output([&] (mutation_fragment&& mf) {
+            impl().process_one(std::move(mf), out);
+        }, [&] {
+            // TODO: allow the intermediate reader to emit more fragments after
+            // the underlying reader has reached EOS
+            impl().process_end_of_stream(out);
+        }));
+    }
+};
+
+class fmr_input_reader {
+    flat_mutation_reader _reader;
+    bool _suspend = false;
+public:
+    explicit fmr_input_reader(flat_mutation_reader rd) : _reader(std::move(rd)) { }
+
+    schema_ptr schema() const { return _reader.schema(); }
+    bool needs_refill() const {
+        return _reader.is_buffer_empty() && !_reader.is_end_of_stream();
+    }
+    future<> refill(db::timeout_clock::time_point timeout) {
+        return _reader.fill_buffer(timeout);
+    }
+
+    void suspend_consume() {
+        _suspend = true;
+    };
+
+    void next_partition() {
+        _reader.next_partition();
+    }
+
+    template<typename Emitter>
+    void emit_fragments(Emitter e) {
+        _suspend = false;
+        while (!_reader.is_buffer_empty() && !_suspend) {
+            e.emit(_reader.pop_mutation_fragment());
+        }
+        if (_reader.is_end_of_stream()) {
+            e.emit_end_of_stream();
+        }
+    }
+};
+
+template<typename Reader>
+Reader wrap_reader(Reader rd) {
+    return std::move(rd);
+}
+
+fmr_input_reader wrap_reader(flat_mutation_reader rd) {
+    return fmr_input_reader(std::move(rd));
+}
+
+template<typename Reader>
+class fmr_output final : public flat_mutation_reader::impl {
+    Reader _rd;
+public:
+    explicit fmr_output(Reader rd)
+        : impl(rd.schema()), _rd(std::move(rd)) { }
+
+    virtual future<> fill_buffer(db::timeout_clock::time_point timeout) override {
+        return do_until([this] { return is_buffer_full() || is_end_of_stream(); }, [this, timeout] {
+            if (_rd.needs_refill()) {
+                return _rd.refill(timeout);
+            }
+            _rd.emit_fragments(make_output([&] (mutation_fragment&& mf) {
+                push_mutation_fragment(std::move(mf));
+                if (is_buffer_full()) {
+                    _rd.suspend_consume();
+                }
+            }, [&] {
+                _end_of_stream = true;
+            }));
+            return make_ready_future<>();
+        });
+    }
+    virtual void next_partition() override {
+        clear_buffer_to_next_partition();
+        if (is_buffer_empty()) {
+            _end_of_stream = false;
+            _rd.next_partition();
+        }
+    }
+    virtual future<> fast_forward_to(const dht::partition_range& pr, db::timeout_clock::time_point timeout) override {
+        abort(); // TODO
+    }
+    virtual future<> fast_forward_to(position_range pr, db::timeout_clock::time_point timeout) override {
+        abort(); // TODO
+    }
+};
+
+template<template<typename> typename Intermediate, typename... Args>
+struct intermediate_op {
+    std::tuple<Args...> _args;
+public:
+    explicit intermediate_op(Args... args) : _args(std::forward<Args>(args)...) { }
+
+    template<typename Reader, size_t... Idx>
+    friend auto apply(Reader rd, std::index_sequence<Idx...>, intermediate_op&& op) {
+        // FIXME: properly forward
+        return Intermediate(wrap_reader(std::move(rd)), std::move(std::get<Idx>(op._args))...);
+    }
+
+    template<typename Reader>
+    friend auto operator|(Reader rd, intermediate_op&& op) {
+        return apply(std::move(rd), std::index_sequence_for<Args...>(), std::move(op));
+    }
+};
+
+
+struct erase_type { };
+
+template<typename Reader>
+flat_mutation_reader operator|(Reader reader, erase_type)
+{
+    return make_flat_mutation_reader<fmr_output<Reader>>(std::move(reader));
+}
+
+flat_mutation_reader operator|(flat_mutation_reader reader, erase_type)
+{
+    return std::move(reader);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+template<typename FilterFn>
+struct filter_partitions {
+    template<typename InputReader>
+    struct reader : public intermediate<InputReader, reader<InputReader>> {
+        FilterFn _filter;
+    public:
+        reader(InputReader rd, FilterFn&& fn)
+            : intermediate<InputReader, reader>(std::move(rd))
+            , _filter(std::move(fn))
+        { }
+
+        template<typename Output>
+        void process_one(mutation_fragment&& mf, Output& out) {
+            if (mf.is_partition_start() && !_filter(mf.as_partition_start().key())) {
+                this->input_to_next_partition();
+                return;
+            }
+            out.emit(std::move(mf));
+        }
+    };
+};
+
+template<typename FilterFn>
+struct filter : intermediate_op<filter_partitions<FilterFn>::template reader, FilterFn> {
+    explicit filter(FilterFn fn)
+        : intermediate_op<filter_partitions<FilterFn>::template reader, FilterFn>(std::move(fn))
+    { }
+};
+
+}
+
 SEASTAR_TEST_CASE(test_filtering) {
     return seastar::async([] {
         auto s = make_schema();
@@ -149,8 +370,11 @@ SEASTAR_TEST_CASE(test_filtering) {
         auto m4 = make_mutation_with_key(s, "key4");
 
         // All pass
-        assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
-                 [] (const dht::decorated_key& dk) { return true; }))
+        //assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
+        //         [] (const dht::decorated_key& dk) { return true; }))
+        assert_that(flat_mutation_reader_from_mutations({m1, m2, m3, m4})
+                    | mutation_readers::filter([] (const dht::decorated_key& dk) { return true; })
+                    | mutation_readers::erase_type())
             .produces(m1)
             .produces(m2)
             .produces(m3)
@@ -158,48 +382,69 @@ SEASTAR_TEST_CASE(test_filtering) {
             .produces_end_of_stream();
 
         // None pass
-        assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
-                 [] (const dht::decorated_key& dk) { return false; }))
+        //assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
+        //         [] (const dht::decorated_key& dk) { return false; }))
+        assert_that(flat_mutation_reader_from_mutations({m1, m2, m3, m4})
+                    | mutation_readers::filter([] (const dht::decorated_key& dk) { return false; })
+                    | mutation_readers::erase_type())
             .produces_end_of_stream();
 
         // Trim front
-        assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
-                [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m1.key()); }))
+        //assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
+        //        [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m1.key()); }))
+        assert_that(flat_mutation_reader_from_mutations({m1, m2, m3, m4})
+                    | mutation_readers::filter([&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m1.key()); })
+                    | mutation_readers::erase_type())
             .produces(m2)
             .produces(m3)
             .produces(m4)
             .produces_end_of_stream();
 
-        assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
-            [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m1.key()) && !dk.key().equal(*s, m2.key()); }))
+        //assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
+        //    [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m1.key()) && !dk.key().equal(*s, m2.key()); }))
+        assert_that(flat_mutation_reader_from_mutations({m1, m2, m3, m4})
+                    | mutation_readers::filter([&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m1.key()) && !dk.key().equal(*s, m2.key()); })
+                    | mutation_readers::erase_type())
             .produces(m3)
             .produces(m4)
             .produces_end_of_stream();
 
         // Trim back
-        assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
-                 [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m4.key()); }))
+        //assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
+        //         [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m4.key()); }))
+        assert_that(flat_mutation_reader_from_mutations({m1, m2, m3, m4})
+                    | mutation_readers::filter([&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m4.key()); })
+                    | mutation_readers::erase_type())
             .produces(m1)
             .produces(m2)
             .produces(m3)
             .produces_end_of_stream();
 
-        assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
-                 [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m4.key()) && !dk.key().equal(*s, m3.key()); }))
+        //assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
+        //         [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m4.key()) && !dk.key().equal(*s, m3.key()); }))
+        assert_that(flat_mutation_reader_from_mutations({m1, m2, m3, m4})
+                    | mutation_readers::filter([&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m4.key()) && !dk.key().equal(*s, m3.key()); })
+                    | mutation_readers::erase_type())
             .produces(m1)
             .produces(m2)
             .produces_end_of_stream();
 
         // Trim middle
-        assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
-                 [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m3.key()); }))
+        //assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
+        //         [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m3.key()); }))
+        assert_that(flat_mutation_reader_from_mutations({m1, m2, m3, m4})
+                    | mutation_readers::filter([&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m3.key()); })
+                    | mutation_readers::erase_type())
             .produces(m1)
             .produces(m2)
             .produces(m4)
             .produces_end_of_stream();
 
-        assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
-                 [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m2.key()) && !dk.key().equal(*s, m3.key()); }))
+        //assert_that(make_filtering_reader(flat_mutation_reader_from_mutations({m1, m2, m3, m4}),
+        //         [&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m2.key()) && !dk.key().equal(*s, m3.key()); }))
+        assert_that(flat_mutation_reader_from_mutations({m1, m2, m3, m4})
+                    | mutation_readers::filter([&] (const dht::decorated_key& dk) { return !dk.key().equal(*s, m2.key()) && !dk.key().equal(*s, m3.key()); })
+                    | mutation_readers::erase_type())
             .produces(m1)
             .produces(m4)
             .produces_end_of_stream();
