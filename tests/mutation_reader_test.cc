@@ -19,6 +19,7 @@
  * along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <variant>
 
 #include <boost/test/unit_test.hpp>
 #include <boost/range/irange.hpp>
@@ -313,7 +314,6 @@ public:
     }
 };
 
-
 struct erase_type { };
 
 template<typename Reader>
@@ -356,6 +356,165 @@ struct filter : intermediate_op<filter_partitions<FilterFn>::template reader, Fi
     explicit filter(FilterFn fn)
         : intermediate_op<filter_partitions<FilterFn>::template reader, FilterFn>(std::move(fn))
     { }
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+class create_reader {
+    schema_ptr _schema;
+    const dht::partition_range& _range;
+    const query::partition_slice& _slice;
+    const io_priority_class& _pc;
+    tracing::trace_state_ptr _trace_state;
+    streamed_mutation::forwarding _fwd;
+    mutation_reader::forwarding _fwd_mr;
+public:
+    // FIXME: do not repeat source arguments so many times
+    create_reader(
+        schema_ptr s,
+        const dht::partition_range& range,
+        const query::partition_slice& slice,
+        const io_priority_class& pc = default_priority_class(),
+        tracing::trace_state_ptr trace_state = nullptr,
+        streamed_mutation::forwarding fwd = streamed_mutation::forwarding::no,
+        mutation_reader::forwarding fwd_mr = mutation_reader::forwarding::yes)
+        : _schema(std::move(s))
+        , _range(range)
+        , _slice(slice)
+        , _pc(pc)
+        , _trace_state(std::move(trace_state))
+        , _fwd(fwd)
+        , _fwd_mr(fwd_mr)
+    { }
+
+    friend flat_mutation_reader operator|(mutation_source ms, create_reader cr) {
+        return ms.make_flat_mutation_reader(std::move(cr._schema), cr._range, cr._slice,
+                                            cr._pc, std::move(cr._trace_state), cr._fwd, cr._fwd_mr);
+    }
+
+    template<typename Source>
+    friend flat_mutation_reader operator|(Source ms, create_reader cr) {
+        return ms(std::move(cr._schema), cr._range, cr._slice, cr._pc,
+                  std::move(cr._trace_state), cr._fwd, cr._fwd_mr);
+    }
+};
+
+template<typename Source, typename Reader = std::invoke_result_t<Source, schema_ptr>>
+class restricted_reader_impl {
+    struct source_and_params {
+        Source _ms;
+        schema_ptr _s;
+
+        auto operator()() {
+            return _ms(std::move(_s));
+        }
+    };
+
+    schema_ptr _s;
+    bool _suspend = false;
+    const restricted_mutation_reader_config& _config;
+    std::variant<source_and_params, Reader> _reader_or_source;
+
+    static const std::size_t new_reader_base_cost{16 * 1024};
+
+    future<> create_reader(db::timeout_clock::time_point timeout) {
+        auto f = timeout != db::no_timeout
+                ? _config.resources_sem->wait(timeout, new_reader_base_cost)
+                : _config.resources_sem->wait(new_reader_base_cost);
+
+        return f.then([this] {
+            auto reader = std::get<source_and_params>(std::move(_reader_or_source))();
+            _reader_or_source.template emplace<Reader>(std::move(reader));
+
+            if (_config.active_reads) {
+                ++(*_config.active_reads);
+            }
+        });
+    }
+
+    template<typename Function>
+    decltype(auto) with_reader(db::timeout_clock::time_point timeout, Function fn) {
+        if (auto* reader = std::get_if<Reader>(&_reader_or_source)) {
+            return fn(*reader);
+        }
+        return create_reader(timeout).then([this, fn = std::move(fn)] () mutable {
+            return fn(std::get<Reader>(_reader_or_source));
+        });
+    }
+public:
+    // FIXME: source arguments
+    restricted_reader_impl(const restricted_mutation_reader_config& config,
+            Source ms,
+            schema_ptr s)
+        : _s(s)
+        , _config(config)
+        , _reader_or_source(source_and_params {std::move(ms), std::move(s) })
+    {
+        if (_config.resources_sem->waiters() >= _config.max_queue_length) {
+            _config.raise_queue_overloaded_exception();
+        }
+    }
+
+    restricted_reader_impl(const restricted_reader_impl&) = delete;
+    restricted_reader_impl(restricted_reader_impl&&) = default;
+    ~restricted_reader_impl() {
+        if (std::get_if<Reader>(&_reader_or_source)) {
+            _config.resources_sem->signal(new_reader_base_cost);
+            if (_config.active_reads) {
+                --(*_config.active_reads);
+            }
+        }
+    }
+
+    schema_ptr schema() const { return _s; }
+    bool needs_refill() const {
+        auto reader = std::get_if<Reader>(&_reader_or_source);
+        return !reader || (reader->is_buffer_empty() && !reader->is_end_of_stream());
+    }
+    future<> refill(db::timeout_clock::time_point timeout) {
+        return with_reader(timeout, [this, timeout] (Reader& rd) {
+            return rd.fill_buffer();
+        });
+    }
+
+    void suspend_consume() {
+        _suspend = true;
+    };
+
+    void next_partition() {
+        if (auto reader = std::get_if<flat_mutation_reader>(&_reader_or_source)) {
+            reader->next_partition();
+        }
+    }
+
+    template<typename Emitter>
+    void emit_fragments(Emitter e) {
+        _suspend = false;
+        // FIXME: We don't need boost::get<> to check if the correct alternative is active.
+        auto& reader = std::get<flat_mutation_reader>(_reader_or_source);
+        while (!reader.is_buffer_empty() && !_suspend) {
+            e.emit(reader.pop_mutation_fragment());
+        }
+        if (reader.is_end_of_stream()) {
+            e.emit_end_of_stream();
+        }
+    }
+};
+
+class restricted_reader {
+    const restricted_mutation_reader_config* _config;
+    schema_ptr _schema;
+public:
+    // FIXME: do not ignore source arguments
+    restricted_reader(const restricted_mutation_reader_config& conf, schema_ptr s)
+        : _config(&conf), _schema(std::move(s)) { }
+
+    // FIXME: make composable with mutation_sources as well
+    
+    template<typename Source>
+    friend restricted_reader_impl<Source> operator|(Source ms, restricted_reader rr) {
+        return restricted_reader_impl(*rr._config, std::move(ms), std::move(rr._schema));
+    }
 };
 
 }
@@ -1067,13 +1226,13 @@ public:
         : _reader(make_empty_flat_reader(schema))
         , _timeout(db::timeout_clock::now() + timeout_duration)
     {
-        auto ms = mutation_source([this, &config, sst=std::move(sst)] (schema_ptr schema, const dht::partition_range&) {
+        _reader = [this, &config, sst=std::move(sst)] (schema_ptr schema) {//, const dht::partition_range&, auto&&...) {
             auto tracker_ptr = std::make_unique<tracking_reader>(config.resources_sem, std::move(schema), std::move(sst));
             _tracker = tracker_ptr.get();
             return flat_mutation_reader(std::move(tracker_ptr));
-        });
-
-        _reader = make_restricted_flat_reader(config, std::move(ms), schema);
+        }
+        | mutation_readers::restricted_reader(config, schema)
+        | mutation_readers::erase_type();
     }
 
     future<> operator()() {
