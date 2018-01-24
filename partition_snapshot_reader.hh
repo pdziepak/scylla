@@ -161,13 +161,11 @@ private:
         return !_clustering_rows.empty();
     }
 
-    mutation_fragment_opt read_static_row() {
-        _last_entry = position_in_partition(position_in_partition::static_row_tag_t());
+    void push_static_row() {
         auto sr = _snapshot->static_row();
         if (!sr.empty()) {
-            return mutation_fragment(std::move(sr));
+            return emplace_mutation_fragment(mutation_fragment(std::move(sr)));
         }
-        return stdx::nullopt;
     }
 
     mutation_fragment_opt read_next() {
@@ -196,13 +194,6 @@ private:
     }
 
     void do_fill_buffer(db::timeout_clock::time_point timeout) {
-        if (!_last_entry) {
-            auto mfopt = read_static_row();
-            if (mfopt) {
-                emplace_mutation_fragment(std::move(*mfopt));
-            }
-        }
-
         auto mark = _snapshot->get_change_mark();
         if (!_in_ck_range || mark != _change_mark) {
             refresh_iterators();
@@ -251,6 +242,7 @@ public:
         , _lsa_region(region)
         , _read_section(read_section) {
         push_mutation_fragment(partition_start(std::move(dk), tomb(*snp)));
+        push_static_row();
         do_fill_buffer(db::no_timeout);
     }
 
