@@ -45,30 +45,55 @@ namespace bi = boost::intrusive;
 
 standard_allocation_strategy standard_allocation_strategy_instance;
 
+namespace {
+
+class migrators {
+    std::vector<const migrate_fn_type*> _migrators;
+    std::deque<uint32_t> _unused_ids;
+public:
+    uint32_t add(const migrate_fn_type* m) {
+        if (!_unused_ids.empty()) {
+            auto idx = _unused_ids.front();
+            _unused_ids.pop_front();
+            _migrators[idx] = m;
+            return idx;
+        }
+        _migrators.push_back(m);
+        return _migrators.size() - 1;
+    }
+    void remove(uint32_t idx) {
+        _migrators[idx] = nullptr;
+        _unused_ids.push_back(idx);
+    }
+    const migrate_fn_type* operator[](uint32_t idx) {
+        return _migrators[idx];
+    }
+};
+
 static
-std::vector<const migrate_fn_type*>&
+migrators&
 static_migrators() {
-    static thread_local std::vector<const migrate_fn_type*> obj;
+    static thread_local migrators obj;
     return obj;
+}
+
 }
 
 namespace debug {
 
-thread_local std::vector<const migrate_fn_type*>* static_migrators = &::static_migrators();
+thread_local migrators* static_migrators = &::static_migrators();
 
 }
 
 
 uint32_t
 migrate_fn_type::register_migrator(const migrate_fn_type* m) {
-    static_migrators().push_back(m);
-    return static_migrators().size() - 1;
+    return static_migrators().add(m);
 }
 
 void
 migrate_fn_type::unregister_migrator(uint32_t index) {
-    static_migrators()[index] = nullptr;
-    // reuse freed slots? no need now
+    static_migrators().remove(index);
 }
 
 namespace logalloc {
