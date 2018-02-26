@@ -70,11 +70,14 @@ public:
     virtual size_t size(const void* obj) const override {
         return size_for_allocation_strategy(*static_cast<const T*>(obj));
     }
-    static standard_migrator object;  // would like to use variable templates, but only available in gcc 5
 };
 
 template <typename T>
-standard_migrator<T> standard_migrator<T>::object;
+standard_migrator<T>& get_standard_migrator()
+{
+    static thread_local standard_migrator<T> instance;
+    return instance;
+}
 
 //
 // Abstracts allocation strategy for managed objects.
@@ -135,7 +138,7 @@ public:
     // requirement.
     template<typename T, typename... Args>
     T* construct(Args&&... args) {
-        void* storage = alloc(&standard_migrator<T>::object, sizeof(T), alignof(T));
+        void* storage = alloc(&get_standard_migrator<T>(), sizeof(T), alignof(T));
         try {
             return new (storage) T(std::forward<Args>(args)...);
         } catch (...) {

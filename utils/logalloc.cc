@@ -48,13 +48,13 @@ standard_allocation_strategy standard_allocation_strategy_instance;
 static
 std::vector<const migrate_fn_type*>&
 static_migrators() {
-    static std::vector<const migrate_fn_type*> obj;
+    static thread_local std::vector<const migrate_fn_type*> obj;
     return obj;
 }
 
 namespace debug {
 
-std::vector<const migrate_fn_type*>* static_migrators = &::static_migrators();
+thread_local std::vector<const migrate_fn_type*>* static_migrators = &::static_migrators();
 
 }
 
