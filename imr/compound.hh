@@ -91,6 +91,17 @@ public:
     static size_t serialize(uint8_t* out, Args&&... args) noexcept {
         return Type::serialize(out, std::forward<Args>(args)...);
     }
+
+    template<typename Continuation = no_op_continuation>
+    static auto get_sizer(Continuation cont = no_op_continuation()) {
+        return Type::get_sizer(std::move(cont));
+    }
+
+    template<typename Continuation = no_op_continuation>
+    static auto get_serializer(uint8_t* out, Continuation cont = no_op_continuation()) {
+        return Type::get_serializer(out, std::move(cont));
+    }
+
 };
 
 template<typename Tag, typename Type>

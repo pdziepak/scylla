@@ -93,8 +93,9 @@ public:
     auto value() const {
         return _view.value();
     }
-    bool is_value_fragmented() const {
-        return false;
+    // Can be called on live cells only
+    size_t value_size() const {
+        return _view.value_size();
     }
     // Can be called on live counter update cells only
     int64_t counter_update_value() const {
@@ -165,7 +166,7 @@ public:
     }
     atomic_cell& operator=(atomic_cell&&) = default;
     operator atomic_cell_view() const {
-        return atomic_cell_view(*this);
+        return atomic_cell_view::from_bytes(type_imr_state(), _data);
     }
     atomic_cell(atomic_cell_view other);
     static atomic_cell make_dead(api::timestamp_type timestamp, gc_clock::time_point deletion_time);
@@ -189,8 +190,11 @@ public:
         }
     }
     template<typename Serializer>
-    static atomic_cell make_live_from_serializer(const abstract_type&, api::timestamp_type timestamp, size_t size, Serializer&& serializer) {
-        abort();
+    static atomic_cell make_live_from_serializer(const abstract_type& type, api::timestamp_type timestamp, size_t size, Serializer&& serializer) {
+        // FIXME!!!!!
+        bytes value(bytes::initialized_later(), size);
+        serializer(value.data());
+        return make_live(type, timestamp, std::move(value));
     }
     friend class atomic_cell_or_collection;
     friend std::ostream& operator<<(std::ostream& os, const atomic_cell& ac);

@@ -302,7 +302,7 @@ lists::setter_by_index::execute(mutation& m, const clustering_key_prefix& prefix
         mut.cells.emplace_back(eidx, params.make_cell(*ltype->value_comparator(), *value));
     }
     auto smut = ltype->serialize_mutation_form(mut);
-    m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(std::move(smut)));
+    m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(*ltype, std::move(smut)));
 }
 
 bool
@@ -329,7 +329,7 @@ lists::setter_by_uuid::execute(mutation& m, const clustering_key_prefix& prefix,
     mut.cells.emplace_back(to_bytes(*index), params.make_cell(*ltype->value_comparator(), *value));
     auto smut = ltype->serialize_mutation_form(mut);
     m.set_cell(prefix, column,
-                    atomic_cell_or_collection::from_collection_mutation(
+                    atomic_cell_or_collection::from_collection_mutation(*ltype,
                                     std::move(smut)));
 }
 
@@ -403,7 +403,7 @@ lists::prepender::execute(mutation& m, const clustering_key_prefix& prefix, cons
     }
     // now reverse again, to get the original order back
     std::reverse(mut.cells.begin(), mut.cells.end());
-    m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(ltype->serialize_mutation_form(std::move(mut))));
+    m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(*ltype, ltype->serialize_mutation_form(std::move(mut))));
 }
 
 bool
@@ -455,7 +455,7 @@ lists::discarder::execute(mutation& m, const clustering_key_prefix& prefix, cons
         }
     }
     auto mnew_ser = ltype->serialize_mutation_form(mnew);
-    m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(std::move(mnew_ser)));
+    m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(*ltype, std::move(mnew_ser)));
 }
 
 bool

@@ -301,7 +301,7 @@ sets::discarder::execute(mutation& m, const clustering_key_prefix& row_key, cons
     }
     auto ctype = static_pointer_cast<const collection_type_impl>(column.type);
     m.set_cell(row_key, column,
-            atomic_cell_or_collection::from_collection_mutation(
+            atomic_cell_or_collection::from_collection_mutation(*ctype,
                     ctype->serialize_mutation_form(mut)));
 }
 

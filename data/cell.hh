@@ -26,6 +26,7 @@
 #include "imr/compound.hh"
 #include "imr/fundamental.hh"
 #include "imr/alloc.hh"
+#include "imr/utils.hh"
 
 #include "data/schema_info.hh"
 
@@ -42,8 +43,8 @@ enum class const_view {
 
 struct cell {
     enum : size_t {
-        maximum_internal_storage_length = 8 * 1024,
-        maximum_external_chunk_length = 8 * 1024,
+        maximum_internal_storage_length = 16 * 1024,
+        maximum_external_chunk_length = 16 * 1024,
     };
 
     struct tags {
@@ -234,7 +235,8 @@ public:
     static auto make_live_counter_update(api::timestamp_type ts, int64_t delta) noexcept {
         return [ts, delta] (auto&& serializer, auto&&...) noexcept {
             return serializer
-                .serialize()
+                .serialize(imr::set_flag<tags::live>(),
+                           imr::set_flag<tags::counter_update>())
                 .template serialize_as_nested<tags::atomic_cell>()
                     .serialize(ts)
                     .skip()
@@ -253,6 +255,31 @@ public:
                 .template serialize_as_nested<tags::atomic_cell>()
                     .serialize(ts)
                     .skip();
+            return [&] {
+                if (ti.is_fixed_size() || value.empty()) {
+                    return after_expiring.template serialize_as<tags::fixed_value>(value);
+                } else {
+                    return serialize_variable_value(after_expiring.template serialize_as_nested<tags::variable_value>(),
+                                                    allocations, value);
+
+                }
+            }().done().done();
+        };
+    }
+
+    static auto make_live(const type_info& ti, api::timestamp_type ts, bytes_view value, gc_clock::time_point expiry, gc_clock::duration ttl) noexcept {
+        return [&ti, ts, value, expiry, ttl] (auto&& serializer, auto&& allocations) noexcept {
+            auto after_expiring = serializer
+                .serialize(imr::set_flag<tags::live>(),
+                           imr::set_flag<tags::expiring>(),
+                           imr::set_flag<tags::empty>(value.empty()),
+                           imr::set_flag<tags::external_data>(!ti.is_fixed_size() && value.size() > maximum_internal_storage_length))
+                .template serialize_as_nested<tags::atomic_cell>()
+                    .serialize(ts)
+                    .serialize_nested()
+                        .serialize(ttl.count())
+                        .serialize(expiry.time_since_epoch().count())
+                        .done();
             return [&] {
                 if (ti.is_fixed_size() || value.empty()) {
                     return after_expiring.template serialize_as<tags::fixed_value>(value);
@@ -486,7 +513,7 @@ public:
             if (fragment.size() > bv.size()) {
                 equal = false;
             } else {
-                auto bv_frag = bv.substr(fragment.size());
+                auto bv_frag = bv.substr(0, fragment.size());
                 equal = equal && fragment == bv_frag;
                 bv.remove_prefix(fragment.size());
             }
@@ -505,6 +532,10 @@ public:
     bytes_view first_chunk() const noexcept {
         return _first_chunk;
     }
+    bytes_view first_chunk() noexcept { // FIXME!!
+        return bytes_mutable_view((int8_t*)_first_chunk.data(), _first_chunk.size());
+    }
+
 
     template<typename Function>
     void for_each(Function&& fn) const {
@@ -566,7 +597,7 @@ public:
     bytes_view serialize() const noexcept {
         assert(!_flags.template get<tags::external_data>());
         auto ptr = raw_pointer();
-        auto len = 0;//structure::serialized_object_size(ptr, _context);
+        auto len = structure::serialized_object_size(ptr, _context);
         return bytes_view(reinterpret_cast<const int8_t*>(ptr), len);
     }
 
@@ -630,7 +661,17 @@ public:
                             }
                     ), _context.context_for<tags::variable_value>(view.raw_pointer()));
                 },
-                [] (...) -> value_view { __builtin_unreachable(); }
+                [] (...) -> value_view { abort(); __builtin_unreachable(); }
+        ), _context);
+    }
+
+    size_t value_size() const noexcept {
+        return _view.template get<tags::value>().visit(utils::make_visitor(
+                [] (fixed_value::view view) -> size_t { return view.size(); },
+                [] (variable_value::view view) -> size_t {
+                    return view.get<tags::value_size>().load();
+                },
+                [] (...) -> size_t { abort(); __builtin_unreachable(); }
         ), _context);
     }
 };
@@ -645,13 +686,42 @@ inline auto cell::copy_fn(const type_info& ti, const uint8_t* ptr)
         auto f = structure::get_member<tags::flags>(ptr);
         context ctx(f, ti);
         if (f.get<tags::collection>()) {
-            //auto data = structure::get_member<tags::cell>(ptr).as<tags::atomic_cell>(ctx);
-            abort();
+            auto view = structure::get_member<tags::cell>(ptr).as<tags::collection>(ctx);
+            auto dv = view.get<tags::value_data>().visit(utils::make_visitor(
+                            [&view] (imr::pod<void*>::view ptr) {
+                                auto size = view.get<tags::value_size>().load();
+                                auto ex_ptr = static_cast<const uint8_t*>(ptr.load());
+                                if (size > maximum_external_chunk_length) {
+                                    auto ex_ctx = chunk_context(ex_ptr);
+                                    auto ex_view = external_chunk::make_view(ex_ptr, ex_ctx);
+                                    auto next = static_cast<const uint8_t*>(ex_view.get<tags::chunk_next>().load());
+                                    return value_view(ex_view.get<tags::chunk_data>(ex_ctx), size - maximum_external_chunk_length, next);
+                                } else {
+                                    auto ex_ctx = last_chunk_context(ex_ptr);
+                                    auto ex_view = external_last_chunk::make_view(ex_ptr, ex_ctx);
+                                    assert(ex_view.get<tags::chunk_data>(ex_ctx).size() == size);
+                                    return value_view(ex_view.get<tags::chunk_data>(ex_ctx), 0, nullptr);
+                                }
+                            },
+                            [] (imr::buffer<tags::data>::view data) {
+                                return value_view(data, 0, nullptr);
+                            }
+                    ), ctx.context_for<tags::collection>(view.raw_pointer()));
+            return make_collection(dv.linearize())(serializer, allocations);
         } else {
             auto ac = structure::get_member<tags::cell>(ptr).as<tags::atomic_cell>(ctx);
             auto acv = atomic_cell_view(ctx, std::move(f), std::move(ac));
             // FIXME: linearize()
-            return make_live(ti, acv.timestamp(), acv.value().linearize())(serializer, allocations);
+            if (acv.is_live()) {
+                if (acv.is_counter_update()) {
+                    return make_live_counter_update(acv.timestamp(), acv.counter_update_value())(serializer, allocations);
+                } else if (acv.is_expiring()) {
+                    return make_live(ti, acv.timestamp(), acv.value().linearize(), acv.expiry(), acv.ttl())(serializer, allocations);
+                }
+                return make_live(ti, acv.timestamp(), acv.value().linearize())(serializer, allocations);
+            } else {
+                return make_dead(acv.timestamp(), acv.deletion_time())(serializer, allocations);
+            }
         }
     };
 }
@@ -815,15 +885,13 @@ struct appending_hash<data::value_view> {
 
 
 // FIXME: This function doesn't return an int, it returns std::strong_ordering.
-inline int compare_unsigned(data::value_view lhs, data::value_view rhs) noexcept {
-    abort();
-}
+int compare_unsigned(data::value_view lhs, data::value_view rhs) noexcept;
 
 namespace data {
 
 struct type_imr_state {
-    using context_factory = imr::alloc::context_factory<cell::context, data::type_info>;
-    using lsa_migrate_fn = imr::alloc::lsa_migrate_fn<cell::structure, context_factory>;
+    using context_factory = imr::alloc::context_factory<imr::utils::object_context<cell::context, data::type_info>, data::type_info>;
+    using lsa_migrate_fn = imr::alloc::lsa_migrate_fn<imr::utils::object<cell::structure>::structure, context_factory>;
 private:
     data::type_info _type_info;
     lsa_migrate_fn _lsa_migrator;

@@ -206,7 +206,7 @@ private:
                 return;
             }
             auto ctype = static_pointer_cast<const collection_type_impl>(_cdef->type);
-            auto ac = atomic_cell_or_collection::from_collection_mutation(ctype->serialize_mutation_form(cm));
+            auto ac = atomic_cell_or_collection::from_collection_mutation(*ctype, ctype->serialize_mutation_form(cm));
             if (_cdef->is_static()) {
                 mf.as_mutable_static_row().set_cell(*_cdef, std::move(ac));
             } else {

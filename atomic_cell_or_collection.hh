@@ -54,21 +54,10 @@ public:
     static constexpr bool can_use_mutable_view() {
         return true;
     }
-    static atomic_cell_or_collection from_collection_mutation(collection_mutation data) {
-        abort();
-        //return std::move(data.data);
-    }
-    collection_mutation_view as_collection_mutation() const {
-        abort();
-        //return collection_mutation_view{_data};
-    }
-    bytes_view serialize() const { // needed by collection serialisation
-        abort();
-        //return _data;
-    }
-    bool operator==(const atomic_cell_or_collection& other) const {
-        abort(); //return _data == other._data;
-    }
+    static atomic_cell_or_collection from_collection_mutation(const collection_type_impl& type, collection_mutation data);
+    collection_mutation_view as_collection_mutation() const;
+    bytes_view serialize() const;
+    bool operator==(const atomic_cell_or_collection& other) const;
     size_t external_memory_usage(const abstract_type&) const {
         return 0; //_data.external_memory_usage();
     }

@@ -1242,7 +1242,7 @@ make_map_mutation(const Map& map,
         }
 
         auto col_mut = column_type->serialize_mutation_form(std::move(mut));
-        return atomic_cell_or_collection::from_collection_mutation(std::move(col_mut));
+        return atomic_cell_or_collection::from_collection_mutation(*column_type, std::move(col_mut));
     } else {
         map_type_impl::native_type tmp;
         tmp.reserve(map.size());
@@ -1411,7 +1411,7 @@ make_list_mutation(const std::vector<T, Args...>& values,
         }
 
         auto list_mut = column_type->serialize_mutation_form(std::move(m));
-        return atomic_cell_or_collection::from_collection_mutation(std::move(list_mut));
+        return atomic_cell_or_collection::from_collection_mutation(*column_type, std::move(list_mut));
     } else {
         list_type_impl::native_type tmp;
         tmp.reserve(values.size());

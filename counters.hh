@@ -346,7 +346,7 @@ public:
     }
 
     size_t shard_count() const {
-        abort(); //return _cell.value().size() / counter_shard_view::size;
+        return _cell.value_size() / counter_shard_view::size;
     }
 protected:
     // ac must be a live counter cell
