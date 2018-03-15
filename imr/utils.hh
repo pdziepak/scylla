@@ -89,6 +89,13 @@ public:
                         imr::member<tags::back_pointer, imr::tagged_type<tags::back_pointer, imr::pod<basic_object*>>>,
                         imr::member<tags::object, Structure>
                       >;
+
+private:
+    explicit object(uint8_t* ptr) noexcept
+        : basic_object(ptr)
+    {
+        structure::template get_member<tags::back_pointer>(_data).store(this);
+    }
 public:
     object() = default;
     object(object&& other) noexcept : basic_object(std::move(other)) {
@@ -98,15 +105,31 @@ public:
     }
 
     object& operator=(object&& other) noexcept {
-        this->~object();
-        new (this) object(std::move(other));
-        return *this;
-    }
-
-    ~object() {
         if (_data) {
             imr::methods::destroy<structure>(_data);
             current_allocator().free(_data);
+        }
+        _data = std::exchange(other._data, nullptr);
+        if (_data) {
+            structure::template get_member<tags::back_pointer>(_data).store(this);
+        }
+        return *this;
+    }
+
+    ~object() { // why isn't this eliminated??
+        if (_data) {
+            imr::methods::destroy<structure>(_data);
+            current_allocator().free(_data);
+        }
+    }
+
+    void swap(object& other) noexcept {
+        std::swap(_data, other._data);
+        if (_data) { // remove these checks?
+            structure::template get_member<tags::back_pointer>(_data).store(this);
+        }
+        if (other._data) {
+            structure::template get_member<tags::back_pointer>(other._data).store(&other);
         }
     }
 
@@ -115,27 +138,40 @@ public:
     uint8_t* get() noexcept { return _data ? _data + structure::template offset_of<tags::object>(_data) : nullptr; }
     const uint8_t* get() const noexcept { return _data ? _data + structure::template offset_of<tags::object>(_data) : nullptr; }
 
+    template<typename Writer>
+    static object make_raw(size_t len, Writer&& wr, allocation_strategy::migrate_fn migrate = &imr::alloc::default_lsa_migrate_fn<structure>::migrate_fn) {
+        object obj;
+        auto ptr = static_cast<uint8_t*>(current_allocator().alloc(migrate, sizeof(void*) + len + 7, 1));
+        wr(ptr + sizeof(void*));
+        auto view = structure::make_view(ptr);
+        view.template get<tags::back_pointer>().store(&obj);
+        obj.set_data(ptr);
+        return obj;
+    }
+
     template<typename Serializer>
     static object make(Serializer&& object_serializer,
                        allocation_strategy::migrate_fn migrate = &imr::alloc::default_lsa_migrate_fn<structure>::migrate_fn) {
-        object obj;
-        auto serializer = [&obj, &object_serializer] (auto&& ser, auto&& alloc) {
-            return object_serializer(ser.serialize(&obj).serialize_nested(), alloc).done();
+        //object obj;
+        auto serializer = [&object_serializer] (auto&& ser, auto&& alloc) {
+            return object_serializer(ser.serialize(nullptr).serialize_nested(), alloc).done();
         };
 
-        alloc::object_allocator allocator;
-        auto obj_size = structure::size_when_serialized(serializer, allocator.get_sizer());
-        auto ptr = static_cast<uint8_t*>(current_allocator().alloc(migrate, obj_size + 7, 1));
-        try {
+        auto& alloc = current_allocator();
+        struct { } nalloc;
+       // alloc::object_allocator allocator(alloc);
+        auto obj_size = structure::size_when_serialized(serializer, nalloc);//allocator.get_sizer());
+        auto ptr = static_cast<uint8_t*>(alloc.alloc(migrate, obj_size + 7, 1));
+        /*try {
             // FIXME: RAII to protect ptr
             allocator.allocate_all();
         } catch (...) {
-            current_allocator().free(ptr, obj_size + 7);
+            alloc.free(ptr, obj_size + 7);
             throw;
-        }
-        structure::serialize(ptr, serializer, allocator.get_serializer());
-        obj.set_data(ptr);
-        return obj;
+        }*/
+        structure::serialize(ptr, serializer, nalloc);//allocator.get_serializer());
+        //obj.set_data(ptr);
+        return object(ptr);
     }
 };
 

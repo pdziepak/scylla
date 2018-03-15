@@ -92,21 +92,21 @@ struct cell {
         imr::member<tags::data, imr::buffer<tags::data>>
     >;
     using variable_value = imr::structure<
-        imr::member<tags::value_size, imr::compressed_integer<uint32_t>>,
+        imr::member<tags::value_size, imr::pod<uint32_t>>,
         imr::member<tags::value_data, value_data_variant>
     >;
     using fixed_value = imr::buffer<tags::fixed_value>;
     using value_variant = imr::variant<tags::value,
-        imr::member<tags::dead, imr::compressed_integer<int32_t>>,
-        imr::member<tags::counter_update, imr::compressed_integer<int64_t>>,
+        imr::member<tags::dead, imr::pod<int32_t>>,
+        imr::member<tags::counter_update, imr::pod<int64_t>>,
         imr::member<tags::fixed_value, fixed_value>,
         imr::member<tags::variable_value, variable_value>
     >;
     using atomic_cell = imr::structure<
         imr::member<tags::timestamp, imr::pod<api::timestamp_type>>,
         imr::optional_member<tags::expiring, imr::structure<
-            imr::member<tags::ttl, imr::compressed_integer<int32_t>>,
-            imr::member<tags::expiry, imr::compressed_integer<int32_t>>
+            imr::member<tags::ttl, imr::pod<int32_t>>,
+            imr::member<tags::expiry, imr::pod<int32_t>>
         >>,
         imr::member<tags::value, value_variant>
     >;
@@ -178,17 +178,19 @@ private:
     template<typename Serializer, typename Allocations>
     static auto serialize_variable_value(Serializer&& serializer, Allocations&& allocations, bytes_view value) noexcept {
         auto after_size = serializer.serialize(value.size());
-        if (value.size() <= maximum_internal_storage_length) {
+        if (__builtin_expect(value.size() <= maximum_internal_storage_length, true)) {
             return after_size.template serialize_as<tags::data>(value).done();
         } else {
-            imr::placeholder<imr::pod<void*>> next_pointer_phldr;
+            abort();
+            /*imr::placeholder<imr::pod<void*>> next_pointer_phldr;
             auto next_pointer_position = after_size.position();
             auto cell_ser = after_size.template serialize_as<tags::pointer>(next_pointer_phldr);
 
             auto offset = 0;
+            auto migrate_fn_ptr = &lsa_chunk_migrate_fn;
             while (value.size() - offset > maximum_external_chunk_length) {
                 imr::placeholder<imr::pod<void*>> phldr;
-                auto chunk_ser = allocations.template allocate_nested<external_chunk>(&lsa_chunk_migrate_fn)
+                auto chunk_ser = allocations.template allocate_nested<external_chunk>(migrate_fn_ptr)
                         .serialize(next_pointer_position);
                 next_pointer_position = chunk_ser.position();
                 next_pointer_phldr.serialize(
@@ -206,7 +208,7 @@ private:
                     .serialize(bytes_view(value.begin() + offset, value.size() - offset))
                     .done();
             next_pointer_phldr.serialize(ptr);
-            return cell_ser.done();
+            return cell_ser.done();*/
         }
     }
 public:
@@ -578,66 +580,80 @@ inline std::ostream& operator<<(std::ostream& os, value_view vv)
 template<const_view is_const>
 class cell::basic_atomic_cell_view {
 public:
-    using flags_type = std::conditional_t<is_const == const_view::yes,
-                                          flags::view,
-                                          flags::mutable_view>;
     using view_type = std::conditional_t<is_const == const_view::yes,
-                                         atomic_cell::view,
-                                         atomic_cell::mutable_view>;
+                                         structure::view,
+                                         structure::mutable_view>;
 private:
-    context _context;
-    flags_type _flags;
+    type_info _type;
     view_type _view;
+private:
+    flags::view flags_view() const noexcept {
+        return _view.template get<tags::flags>();
+    }
+    atomic_cell::view cell_view() const noexcept {
+        return _view.template get<tags::cell>().template as<tags::atomic_cell>();
+    }
+    auto cell_view() noexcept {
+        return _view.template get<tags::cell>().template as<tags::atomic_cell>();
+    }
+    context make_context() const noexcept {
+        return context(flags_view(), _type);
+    }
 public:
-    basic_atomic_cell_view(context ctx, flags_type f, view_type v)
-        : _context(std::move(ctx)), _flags(std::move(f)), _view(std::move(v)) { }
+    basic_atomic_cell_view(const type_info& ti, view_type v) noexcept
+        : _type(ti), _view(std::move(v)) { }
 
-    const uint8_t* raw_pointer() const { return _view.raw_pointer() - flags::size_when_serialized(); }
+    operator basic_atomic_cell_view<const_view::yes>() const noexcept {
+        return basic_atomic_cell_view<const_view::yes>(_type, _view);
+    }
+
+    const uint8_t* raw_pointer() const { return _view.raw_pointer(); }
 
     bytes_view serialize() const noexcept {
-        assert(!_flags.template get<tags::external_data>());
+        assert(!flags_view().template get<tags::external_data>());
         auto ptr = raw_pointer();
-        auto len = structure::serialized_object_size(ptr, _context);
+        auto len = structure::serialized_object_size(ptr, make_context());
         return bytes_view(reinterpret_cast<const int8_t*>(ptr), len);
     }
 
     bool is_live() const noexcept {
-        return _flags.template get<tags::live>();
+        return flags_view().template get<tags::live>();
     }
     bool is_expiring() const noexcept {
-        return _flags.template get<tags::expiring>();
+        return flags_view().template get<tags::expiring>();
     }
     bool is_counter_update() const noexcept {
-        return _flags.template get<tags::counter_update>();
+        return flags_view().template get<tags::counter_update>();
     }
 
     api::timestamp_type timestamp() const noexcept {
-        return _view.template get<tags::timestamp>().load();
+        return cell_view().template get<tags::timestamp>().load();
     }
     void set_timestamp(api::timestamp_type ts) noexcept {
-        _view.template get<tags::timestamp>().store(ts);
+        cell_view().template get<tags::timestamp>().store(ts);
     }
 
     gc_clock::time_point expiry() const noexcept {
-        auto v = _view.template get<tags::expiring>().get().template get<tags::expiry>().load();
+        auto v = cell_view().template get<tags::expiring>().get().template get<tags::expiry>().load();
         return gc_clock::time_point(gc_clock::duration(v));
     }
     gc_clock::duration ttl() const noexcept {
-        auto v = _view.template get<tags::expiring>().get().template get<tags::ttl>().load();
+        auto v = cell_view().template get<tags::expiring>().get().template get<tags::ttl>().load();
         return gc_clock::duration(v);
     }
 
     gc_clock::time_point deletion_time() const noexcept {
-        auto v = _view.template get<tags::value>().template as<tags::dead>().load();
+        auto v = cell_view().template get<tags::value>(make_context()).template as<tags::dead>().load();
         return gc_clock::time_point(gc_clock::duration(v));
     }
 
     int64_t counter_update_value() const noexcept {
-        return _view.template get<tags::value>().template as<tags::counter_update>().load();
+        return cell_view().template get<tags::value>(make_context()).template as<tags::counter_update>().load();
     }
 
     value_view value() const noexcept {
-        return _view.template get<tags::value>().visit(utils::make_visitor(
+        auto ctx = make_context();
+        return cell_view().template get<tags::value>(ctx).visit(utils::make_visitor(
                 [] (fixed_value::view view) { return value_view(view, 0, nullptr); },
                 [&] (variable_value::view view) {
                     return view.get<tags::value_data>().visit(utils::make_visitor(
@@ -659,20 +675,21 @@ public:
                             [] (imr::buffer<tags::data>::view data) {
                                 return value_view(data, 0, nullptr);
                             }
-                    ), _context.context_for<tags::variable_value>(view.raw_pointer()));
+                    ), ctx.template context_for<tags::variable_value>(view.raw_pointer()));
                 },
                 [] (...) -> value_view { abort(); __builtin_unreachable(); }
-        ), _context);
+        ), ctx);
     }
 
     size_t value_size() const noexcept {
-        return _view.template get<tags::value>().visit(utils::make_visitor(
+        auto ctx = make_context();
+        return cell_view().template get<tags::value>(ctx).visit(utils::make_visitor(
                 [] (fixed_value::view view) -> size_t { return view.size(); },
                 [] (variable_value::view view) -> size_t {
                     return view.get<tags::value_size>().load();
                 },
                 [] (...) -> size_t { abort(); __builtin_unreachable(); }
-        ), _context);
+        ), ctx);
     }
 };
 
@@ -684,12 +701,12 @@ inline auto cell::copy_fn(const type_info& ti, const uint8_t* ptr)
     // Not to mention that now we deserialize the original cell twice.
     return [&ti, ptr] (auto&& serializer, auto&& allocations) noexcept {
         auto f = structure::get_member<tags::flags>(ptr);
-        context ctx(f, ti);
+        context ctx(ptr, ti);
         if (f.get<tags::collection>()) {
             auto view = structure::get_member<tags::cell>(ptr).as<tags::collection>(ctx);
-            auto dv = view.get<tags::value_data>().visit(utils::make_visitor(
-                            [&view] (imr::pod<void*>::view ptr) {
-                                auto size = view.get<tags::value_size>().load();
+            auto dv = view.get<tags::value_data>(ctx).visit(utils::make_visitor(
+                            [&view, &ctx] (imr::pod<void*>::view ptr) {
+                                auto size = view.get<tags::value_size>(ctx).load();
                                 auto ex_ptr = static_cast<const uint8_t*>(ptr.load());
                                 if (size > maximum_external_chunk_length) {
                                     auto ex_ctx = chunk_context(ex_ptr);
@@ -709,8 +726,7 @@ inline auto cell::copy_fn(const type_info& ti, const uint8_t* ptr)
                     ), ctx.context_for<tags::collection>(view.raw_pointer()));
             return make_collection(dv.linearize())(serializer, allocations);
         } else {
-            auto ac = structure::get_member<tags::cell>(ptr).as<tags::atomic_cell>(ctx);
-            auto acv = atomic_cell_view(ctx, std::move(f), std::move(ac));
+            auto acv = atomic_cell_view(ti, structure::make_view(ptr, ti));
             // FIXME: linearize()
             if (acv.is_live()) {
                 if (acv.is_counter_update()) {
@@ -727,17 +743,11 @@ inline auto cell::copy_fn(const type_info& ti, const uint8_t* ptr)
 }
 
 inline cell::atomic_cell_view cell::make_atomic_cell_view(const type_info& ti, const uint8_t* ptr) noexcept {
-    auto f = structure::get_member<tags::flags>(ptr);
-    context ctx(f, ti);
-    auto ac = structure::get_member<tags::cell>(ptr).as<tags::atomic_cell>(ctx);
-    return atomic_cell_view(ctx, std::move(f), std::move(ac));
+    return atomic_cell_view(ti, structure::make_view(ptr));
 }
 
 inline cell::mutable_atomic_cell_view cell::make_atomic_cell_view(const type_info& ti, uint8_t* ptr) noexcept {
-    auto f = structure::get_member<tags::flags>(ptr);
-    context ctx(f, ti);
-    auto ac = structure::get_member<tags::cell>(ptr).as<tags::atomic_cell>(ctx);
-    return mutable_atomic_cell_view(ctx, std::move(f), std::move(ac));
+    return mutable_atomic_cell_view(ti, structure::make_view(ptr));
 }
 
 class fragment_chain_destructor_context : public imr::no_context_t {

@@ -304,6 +304,7 @@ row_marker view_updates::compute_row_marker(const clustering_row& base_row) cons
 }
 
 deletable_row& view_updates::get_view_row(const partition_key& base_key, const clustering_row& update) {
+    std::vector<bytes> linearized;
     auto get_value = boost::adaptors::transformed([&, this] (const column_definition& cdef) {
         auto* base_col = _base->get_column_definition(cdef.name());
         assert(base_col);
@@ -315,8 +316,9 @@ deletable_row& view_updates::get_view_row(const partition_key& base_key, const c
         default:
             auto& c = update.cells().cell_at(base_col->id);
             if (base_col->is_atomic()) {
-                abort();
-                //return c.as_atomic_cell(cdef).value();
+                auto b = c.as_atomic_cell(cdef).value().linearize();
+                // FIXME!!
+                return bytes_view(linearized.emplace_back(std::move(b)));
             }
             return c.as_collection_mutation().data;
         }

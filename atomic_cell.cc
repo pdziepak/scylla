@@ -31,7 +31,7 @@ const data::type_imr_state& no_type_imr_state() {
 atomic_cell atomic_cell::make_dead(api::timestamp_type timestamp, gc_clock::time_point deletion_time) {
     auto& imr_data = no_type_imr_state();
     return atomic_cell(
-            imr_data,
+            imr_data.type_info(),
             imr_object_type::make(data::cell::make_dead(timestamp, deletion_time), &imr_data.lsa_migrator())
     );
 }
@@ -39,16 +39,17 @@ atomic_cell atomic_cell::make_dead(api::timestamp_type timestamp, gc_clock::time
 atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, bytes_view value) {
     auto& imr_data = type.imr_state();
     return atomic_cell(
-        imr_data,
-        imr_object_type::make(data::cell::make_live(imr_data.type_info(), timestamp, value), &imr_data.lsa_migrator())
+        imr_data.type_info(),
+        [&] { return imr_object_type::make(data::cell::make_live(imr_data.type_info(), timestamp, value), &imr_data.lsa_migrator()); }
     );
 }
 
+// inlining? making cells in batches? nah...
 atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, bytes_view value,
                              gc_clock::time_point expiry, gc_clock::duration ttl) {
     auto& imr_data = type.imr_state();
     return atomic_cell(
-        imr_data,
+        imr_data.type_info(),
         imr_object_type::make(data::cell::make_live(imr_data.type_info(), timestamp, value, expiry, ttl), &imr_data.lsa_migrator())
     );
 }
@@ -56,15 +57,29 @@ atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_typ
 atomic_cell atomic_cell::make_live_counter_update(api::timestamp_type timestamp, int64_t value) {
     auto& imr_data = no_type_imr_state();
     return atomic_cell(
-            imr_data,
-            imr_object_type::make(data::cell::make_live_counter_update(timestamp, value), &imr_data.lsa_migrator())
+        imr_data.type_info(),
+        imr_object_type::make(data::cell::make_live_counter_update(timestamp, value), &imr_data.lsa_migrator())
     );
 }
 
-atomic_cell::atomic_cell(atomic_cell_view other)
-    : atomic_cell(other.type_imr_state(),
-                  imr_object_type::make(data::cell::copy_fn(other.type_imr_state().type_info(), other._view.raw_pointer()),
-                                        &other.type_imr_state().lsa_migrator()))
+static imr::utils::object<data::cell::structure> copy2(const data::type_imr_state& imr_data, const uint8_t* ptr)
+{
+    using imr_object_type = imr::utils::object<data::cell::structure>;
+    auto f = data::cell::structure::get_member<data::cell::tags::flags>(ptr);
+    if (!f.template get<data::cell::tags::external_data>()) {
+        data::cell::context ctx(f, imr_data.type_info());
+        auto size = data::cell::structure::serialized_object_size(ptr, ctx);
+        return imr_object_type::make_raw(size, [&] (auto dst) {
+            std::copy_n(ptr, size, dst);
+        }, &imr_data.lsa_migrator());
+    }
+    return  imr_object_type::make(data::cell::copy_fn(imr_data.type_info(), ptr), &imr_data.lsa_migrator());
+}
+
+atomic_cell::atomic_cell(const abstract_type& type, atomic_cell_view other)
+    : atomic_cell(type.imr_state().type_info(),
+                  /*imr_object_type::make(data::cell::copy_fn(other.type_imr_state().type_info(), other._view.raw_pointer()),
+                                        &other.type_imr_state().lsa_migrator())*/ [&] { return copy2(type.imr_state(), other._view.raw_pointer()); })
 { }
 
 atomic_cell_or_collection::atomic_cell_or_collection(collection_mutation cm)
@@ -78,7 +93,8 @@ atomic_cell_or_collection atomic_cell_or_collection::copy(const abstract_type& t
     }
     auto& imr_data = type.imr_state();
     return atomic_cell_or_collection(
-        imr_object_type::make(data::cell::copy_fn(imr_data.type_info(), _data.get()), &imr_data.lsa_migrator())
+        //imr_object_type::make(data::cell::copy_fn(imr_data.type_info(), _data.get()), &imr_data.lsa_migrator())
+        copy2(imr_data, _data.get())
     );
 }
 
@@ -87,6 +103,11 @@ atomic_cell_or_collection atomic_cell_or_collection::from_collection_mutation(co
     return atomic_cell_or_collection(
         imr_object_type::make(data::cell::make_collection(data.data), &imr_data.lsa_migrator())
     );
+}
+
+atomic_cell_or_collection::atomic_cell_or_collection(const abstract_type& type, atomic_cell_view acv)
+    : _data(copy2(type.imr_state(), acv._view.raw_pointer()))
+{
 }
 
 collection_mutation_view atomic_cell_or_collection::as_collection_mutation() const {
@@ -119,6 +140,19 @@ collection_mutation_view atomic_cell_or_collection::as_collection_mutation() con
     return collection_mutation_view::from_bytes(dv.first_chunk());
 }
 
-bool atomic_cell_or_collection::operator==(const atomic_cell_or_collection& other) const {
+// FREE!
+bool atomic_cell_or_collection::equal(const abstract_type& t, const atomic_cell_or_collection& other) const {
+    if (t.is_atomic()) {
+        auto a = atomic_cell_view::from_bytes(t.imr_state().type_info(), _data);
+        auto b = atomic_cell_view::from_bytes(t.imr_state().type_info(), other._data);
+        if (a.is_live()) {
+            if (!b.is_live()) {
+                return false;
+            }
+            return a.timestamp() == b.timestamp() && a.value() == b.value();
+        }
     return true;
+    } else {
+        return boost::equal(as_collection_mutation().data, other.as_collection_mutation().data);
+    }
 }

@@ -475,15 +475,15 @@ struct structure {
         using pointer_type = std::conditional_t<is_const == const_view::yes,
                                                 const uint8_t*, uint8_t*>;
         pointer_type _ptr;
-        std::array<uint32_t, sizeof...(Members)> _offsets;
+        //std::array<uint32_t, sizeof...(Members)> _offsets;
     private:
-        basic_view(pointer_type ptr, const std::array<uint32_t, sizeof...(Members)>& offsets) noexcept
-            : _ptr(ptr), _offsets(offsets) { }
+        /*basic_view(pointer_type ptr, const std::array<uint32_t, sizeof...(Members)>& offsets) noexcept
+            : _ptr(ptr), _offsets(offsets) { }*/
         friend class basic_view<const_view::no>;
     public:
         template<typename Context>
         explicit basic_view(pointer_type ptr, const Context& context) noexcept : _ptr(ptr) {
-            size_t idx = 0;
+            /*size_t idx = 0;
             _offsets[0] = 0;
             auto visit_member = [&] (auto ptr) noexcept {
                 using member = std::remove_pointer_t<decltype(ptr)>;
@@ -494,24 +494,33 @@ struct structure {
                 total_size += this_size;
                 _offsets[++idx] = total_size;
             };
-            meta::for_each<meta::take<sizeof...(Members) - 1, Members...>>(visit_member);
+            meta::for_each<meta::take<sizeof...(Members) - 1, Members...>>(visit_member);*/
         }
 
         pointer_type raw_pointer() const noexcept { return _ptr; }
 
         operator basic_view<const_view::yes>() const noexcept {
-            return basic_view<const_view::yes>(_ptr, _offsets);
+            return basic_view<const_view::yes>(_ptr, no_context);
         }
 
-        template<typename Tag>
-        auto offset_of() const noexcept {
-            return _offsets[internal::get_member_index<Tag, Members...>];
+        template<typename Tag, typename Context = no_context_t>
+        auto offset_of(const Context& context = no_context) const noexcept {
+            static constexpr auto idx = internal::get_member_index<Tag, Members...>;
+            size_t total_size = 0;
+            meta::for_each<meta::take<idx, Members...>>([&] (auto ptr) {
+                using member = std::remove_pointer_t<decltype(ptr)>;
+                auto offset = _ptr + total_size;
+                auto this_size = member::type::serialized_object_size(offset, context.template context_for<typename member::tag>(offset));
+                total_size += this_size;
+            });
+            return total_size;
+            //return _offsets[internal::get_member_index<Tag, Members...>];
         }
 
         template<typename Tag, typename Context = no_context_t>
         auto get(const Context& context = no_context) const noexcept {
             using member = internal::get_member<Tag, Members...>;
-            auto offset = _ptr + offset_of<Tag>();
+            auto offset = _ptr + offset_of<Tag, Context>(context);
             return member::type::make_view(offset, context.template context_for<Tag>(offset));
         }
     };

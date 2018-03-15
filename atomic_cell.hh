@@ -39,18 +39,17 @@ class abstract_type;
 template<data::const_view is_const>
 class basic_atomic_cell_view {
 protected:
-    const data::type_imr_state* _imr_state;
+    //const data::type_imr_state* _imr_state; // get imr state from the view
     data::cell::basic_atomic_cell_view<is_const> _view;
     friend class atomic_cell;
 public:
     using pointer_type = std::conditional_t<is_const == data::const_view::yes, const uint8_t*, uint8_t*>;
-private:
-    explicit basic_atomic_cell_view(const data::type_imr_state& t, data::cell::basic_atomic_cell_view<is_const> v)
-        : _imr_state(&t), _view(std::move(v)) { }
 protected:
-    basic_atomic_cell_view(const data::type_imr_state& t, pointer_type ptr)
-        : _imr_state(&t)
-        , _view(data::cell::make_atomic_cell_view(t.type_info(), ptr))
+    explicit basic_atomic_cell_view(data::cell::basic_atomic_cell_view<is_const> v)
+        : _view(std::move(v)) { }
+
+    basic_atomic_cell_view(const data::type_info& ti, pointer_type ptr)
+        : _view(data::cell::make_atomic_cell_view(ti, ptr))
     { }
 
     friend class atomic_cell_or_collection;
@@ -59,7 +58,10 @@ public:
         return basic_atomic_cell_view<data::const_view::yes>(_view);
     }
 
-    const data::type_imr_state& type_imr_state() const { return *_imr_state; }
+    void swap(basic_atomic_cell_view& other) noexcept {
+        using std::swap;
+        swap(_view, other._view);
+    }
 
     bool is_counter_update() const {
         return _view.is_counter_update();
@@ -124,26 +126,31 @@ public:
 };
 
 class atomic_cell_view final : public basic_atomic_cell_view<data::const_view::yes> {
-    atomic_cell_view(const data::type_imr_state& t, const uint8_t* data)
-        : basic_atomic_cell_view<data::const_view::yes>(t, data) {}
+    atomic_cell_view(const data::type_info& ti, const uint8_t* data)
+        : basic_atomic_cell_view<data::const_view::yes>(ti, data) {}
+
+    template<data::const_view is_const>
+    atomic_cell_view(data::cell::basic_atomic_cell_view<is_const> view)
+        : basic_atomic_cell_view<data::const_view::yes>(view) { }
+    friend class atomic_cell;
 public:
-    static atomic_cell_view from_bytes(const data::type_imr_state& t, const imr::utils::object<data::cell::structure>& data) {
-        return atomic_cell_view(t, data.get());
+    static atomic_cell_view from_bytes(const data::type_info& ti, const imr::utils::object<data::cell::structure>& data) {
+        return atomic_cell_view(ti, data.get());
     }
 
-    static atomic_cell_view from_bytes(const data::type_imr_state& t, bytes_view bv) {
-        return atomic_cell_view(t, reinterpret_cast<const uint8_t*>(bv.begin()));
+    static atomic_cell_view from_bytes(const data::type_info& ti, bytes_view bv) {
+        return atomic_cell_view(ti, reinterpret_cast<const uint8_t*>(bv.begin()));
     }
 
     friend std::ostream& operator<<(std::ostream& os, const atomic_cell_view& acv);
 };
 
 class atomic_cell_mutable_view final : public basic_atomic_cell_view<data::const_view::no> {
-    atomic_cell_mutable_view(const data::type_imr_state& t, uint8_t* data)
-        : basic_atomic_cell_view<data::const_view::no>(t, data) {}
+    atomic_cell_mutable_view(const data::type_info& ti, uint8_t* data)
+        : basic_atomic_cell_view<data::const_view::no>(ti, data) {}
 public:
-    static atomic_cell_mutable_view from_bytes(const data::type_imr_state& t, imr::utils::object<data::cell::structure>& data) {
-        return atomic_cell_mutable_view(t, data.get());
+    static atomic_cell_mutable_view from_bytes(const data::type_info& ti, imr::utils::object<data::cell::structure>& data) {
+        return atomic_cell_mutable_view(ti, data.get());
     }
 
     friend class atomic_cell;
@@ -154,21 +161,25 @@ using atomic_cell_ref = atomic_cell_mutable_view;
 class atomic_cell final : public basic_atomic_cell_view<data::const_view::no> {
     using imr_object_type =  imr::utils::object<data::cell::structure>;
     imr_object_type _data;
-    atomic_cell(const data::type_imr_state& t, imr::utils::object<data::cell::structure> data)
-        : basic_atomic_cell_view<data::const_view::no>(t, data.get()), _data(std::move(data)) {}
+    atomic_cell(const data::type_info& ti, imr::utils::object<data::cell::structure>&& data) // <==
+        : basic_atomic_cell_view<data::const_view::no>(ti, data.get()), _data(std::move(data)) {}
 public:
-    atomic_cell(const atomic_cell& other) : atomic_cell(atomic_cell_view(other)) { }
+    template<typename Function>
+    atomic_cell(const data::type_info& ti, Function&& fn)
+        : basic_atomic_cell_view<data::const_view::no>(ti, nullptr), _data(fn())
+        {
+            _view = data::cell::make_atomic_cell_view(ti, _data.get());
+        }
+    //atomic_cell(const atomic_cell& other) : atomic_cell(t, atomic_cell_view(other)) { }
     atomic_cell(atomic_cell&&) = default;
-    atomic_cell& operator=(const atomic_cell& other) {
-        this->~atomic_cell();
-        new (this) atomic_cell(other);
-        return *this;
-    }
+    atomic_cell& operator=(const atomic_cell&) = delete;
     atomic_cell& operator=(atomic_cell&&) = default;
-    operator atomic_cell_view() const {
-        return atomic_cell_view::from_bytes(type_imr_state(), _data);
+    void swap(atomic_cell& other) noexcept {
+        basic_atomic_cell_view<data::const_view::no>::swap(other);
+        _data.swap(other._data);
     }
-    atomic_cell(atomic_cell_view other);
+    operator atomic_cell_view() const { return atomic_cell_view(_view); }
+    atomic_cell(const abstract_type& t, atomic_cell_view other);
     static atomic_cell make_dead(api::timestamp_type timestamp, gc_clock::time_point deletion_time);
     static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, bytes_view value);
     static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const bytes& value) {
