@@ -35,6 +35,7 @@
 #include "imr/utils.hh"
 
 class abstract_type;
+class collection_type_impl;
 
 template<data::const_view is_const>
 class basic_atomic_cell_view {
@@ -92,12 +93,15 @@ public:
         _view.set_timestamp(ts);
     }
     // Can be called on live cells only
-    auto value() const {
+    data::value_view value() const {
         return _view.value();
     }
     // Can be called on live cells only
     size_t value_size() const {
         return _view.value_size();
+    }
+    bool is_value_fragmented() const {
+        return _view.is_value_fragmented();
     }
     // Can be called on live counter update cells only
     int64_t counter_update_value() const {
@@ -164,6 +168,9 @@ class atomic_cell final : public basic_atomic_cell_view<data::const_view::no> {
     atomic_cell(const data::type_info& ti, imr::utils::object<data::cell::structure>&& data) // <==
         : basic_atomic_cell_view<data::const_view::no>(ti, data.get()), _data(std::move(data)) {}
 public:
+    class collection_member_tag;
+    using collection_member = bool_class<collection_member_tag>;
+
     template<typename Function>
     atomic_cell(const data::type_info& ti, Function&& fn)
         : basic_atomic_cell_view<data::const_view::no>(ti, nullptr), _data(fn())
@@ -181,23 +188,25 @@ public:
     operator atomic_cell_view() const { return atomic_cell_view(_view); }
     atomic_cell(const abstract_type& t, atomic_cell_view other);
     static atomic_cell make_dead(api::timestamp_type timestamp, gc_clock::time_point deletion_time);
-    static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, bytes_view value);
-    static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const bytes& value) {
-        return make_live(type, timestamp, bytes_view(value));
+    static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, bytes_view value,
+                                 collection_member = collection_member::no);
+    static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const bytes& value,
+                                 collection_member cm = collection_member::no) {
+        return make_live(type, timestamp, bytes_view(value), cm);
     }
     static atomic_cell make_live_counter_update(api::timestamp_type timestamp, int64_t value);
     static atomic_cell make_live(const abstract_type&, api::timestamp_type timestamp, bytes_view value,
-        gc_clock::time_point expiry, gc_clock::duration ttl);
+        gc_clock::time_point expiry, gc_clock::duration ttl, collection_member = collection_member::no);
     static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const bytes& value,
-                                 gc_clock::time_point expiry, gc_clock::duration ttl)
+                                 gc_clock::time_point expiry, gc_clock::duration ttl, collection_member cm = collection_member::no)
     {
-        return make_live(type, timestamp, bytes_view(value), expiry, ttl);
+        return make_live(type, timestamp, bytes_view(value), expiry, ttl, cm);
     }
-    static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, bytes_view value, ttl_opt ttl) {
+    static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, bytes_view value, ttl_opt ttl, collection_member cm = collection_member::no) {
         if (!ttl) {
-            return make_live(type, timestamp, value);
+            return make_live(type, timestamp, value, cm);
         } else {
-            return make_live(type, timestamp, value, gc_clock::now() + *ttl, *ttl);
+            return make_live(type, timestamp, value, gc_clock::now() + *ttl, *ttl, cm);
         }
     }
     template<typename Serializer>
@@ -220,19 +229,24 @@ class collection_mutation_view;
 //   list: tbd, probably ugly
 class collection_mutation {
 public:
-    managed_bytes data;
+    using imr_object_type =  imr::utils::object<data::cell::structure>;
+    imr_object_type _data;
+    //data::value_view data;
     collection_mutation() {}
-    collection_mutation(managed_bytes b) : data(std::move(b)) {}
-    collection_mutation(collection_mutation_view v);
+    //collection_mutation(con)
+    //collection_mutation(managed_bytes b) : data(std::move(b)) {}
+    collection_mutation(const collection_type_impl&, collection_mutation_view v);
+    collection_mutation(const collection_type_impl&, bytes_view);
     operator collection_mutation_view() const;
 };
+
 
 class collection_mutation_view {
 public:
     // FIXME: encapsulate properly
     atomic_cell_value_view data;
 };
-
+/*
 inline
 collection_mutation::collection_mutation(collection_mutation_view v)
         : data(v.data.linearize()) {
@@ -242,7 +256,7 @@ inline
 collection_mutation::operator collection_mutation_view() const {
     return { atomic_cell_value_view(bytes_view(data)) };
 }
-
+*/
 class column_definition;
 
 int compare_atomic_cell_for_merge(atomic_cell_view left, atomic_cell_view right);

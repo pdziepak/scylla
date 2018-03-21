@@ -299,7 +299,7 @@ lists::setter_by_index::execute(mutation& m, const clustering_key_prefix& prefix
     if (!value) {
         mut.cells.emplace_back(eidx, params.make_dead_cell());
     } else {
-        mut.cells.emplace_back(eidx, params.make_cell(*ltype->value_comparator(), *value));
+        mut.cells.emplace_back(eidx, params.make_cell(*ltype->value_comparator(), *value, atomic_cell::collection_member::yes));
     }
     auto smut = ltype->serialize_mutation_form(mut);
     m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(*ltype, std::move(smut)));
@@ -326,7 +326,7 @@ lists::setter_by_uuid::execute(mutation& m, const clustering_key_prefix& prefix,
 
     list_type_impl::mutation mut;
     mut.cells.reserve(1);
-    mut.cells.emplace_back(to_bytes(*index), params.make_cell(*ltype->value_comparator(), *value));
+    mut.cells.emplace_back(to_bytes(*index), params.make_cell(*ltype->value_comparator(), *value, atomic_cell::collection_member::yes));
     auto smut = ltype->serialize_mutation_form(mut);
     m.set_cell(prefix, column,
                     atomic_cell_or_collection::from_collection_mutation(*ltype,
@@ -365,7 +365,7 @@ lists::do_append(shared_ptr<term> value,
             auto uuid1 = utils::UUID_gen::get_time_UUID_bytes();
             auto uuid = bytes(reinterpret_cast<const int8_t*>(uuid1.data()), uuid1.size());
             // FIXME: can e be empty?
-            appended.cells.emplace_back(std::move(uuid), params.make_cell(*ltype->value_comparator(), *e));
+            appended.cells.emplace_back(std::move(uuid), params.make_cell(*ltype->value_comparator(), *e, atomic_cell::collection_member::yes));
         }
         m.set_cell(prefix, column, ltype->serialize_mutation_form(appended));
     } else {
@@ -399,7 +399,7 @@ lists::prepender::execute(mutation& m, const clustering_key_prefix& prefix, cons
     for (auto&& v : lvalue->_elements | boost::adaptors::reversed) {
         auto&& pt = precision_time::get_next(time);
         auto uuid = utils::UUID_gen::get_time_UUID_bytes(pt.millis.time_since_epoch().count(), pt.nanos);
-        mut.cells.emplace_back(bytes(uuid.data(), uuid.size()), params.make_cell(*ltype->value_comparator(), *v));
+        mut.cells.emplace_back(bytes(uuid.data(), uuid.size()), params.make_cell(*ltype->value_comparator(), *v, atomic_cell::collection_member::yes));
     }
     // now reverse again, to get the original order back
     std::reverse(mut.cells.begin(), mut.cells.end());

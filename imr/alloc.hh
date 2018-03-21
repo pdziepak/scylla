@@ -216,7 +216,8 @@ public:
     };
 
 public:
-    explicit object_allocator(allocation_strategy& allocator) : _allocator(allocator) { }
+    explicit object_allocator(allocation_strategy& allocator = current_allocator())
+        : _allocator(allocator) { }
 
     size_t requested_allocations_count() const noexcept { return _allocations.size(); }
 

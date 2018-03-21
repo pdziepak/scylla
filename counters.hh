@@ -291,9 +291,15 @@ public:
 template<data::const_view is_const>
 class basic_counter_cell_view {
 protected:
+<<<<<<< HEAD
     using linearized_value_view = std::conditional_t<is_const == data::const_view::yes,
                                                      bytes_view, bytes_mutable_view>;
     using pointer_type = typename linearized_value_view::pointer;
+=======
+    using pointer_type = typename basic_atomic_cell_view<is_const>::pointer_type;
+    using linearized_value_view = std::conditional_t<is_const == data::const_view::yes,
+                                                     bytes_view, bytes_mutable_view>;
+>>>>>>> 5dd0ce6f6... yay, huge commite!
     basic_atomic_cell_view<is_const> _cell;
     linearized_value_view _value;
 private:
@@ -392,7 +398,11 @@ struct counter_cell_view : basic_counter_cell_view<data::const_view::yes> {
 
     template<typename Function>
     static decltype(auto) with_linearized(basic_atomic_cell_view<data::const_view::yes> ac, Function&& fn) {
+<<<<<<< HEAD
         return ac.value().with_linearized([&] (bytes_view value_view) {
+=======
+        return ac.value().with_linearized([&] (bytes_view value_view) { // free function?
+>>>>>>> 5dd0ce6f6... yay, huge commite!
             counter_cell_view ccv(ac, value_view);
             return fn(ccv);
         });
@@ -414,8 +424,13 @@ struct counter_cell_view : basic_counter_cell_view<data::const_view::yes> {
 struct counter_cell_mutable_view : basic_counter_cell_view<data::const_view::no> {
     using basic_counter_cell_view::basic_counter_cell_view;
 
+<<<<<<< HEAD
     explicit counter_cell_mutable_view(atomic_cell_mutable_view ac) noexcept
         : basic_counter_cell_view<data::const_view::no>(ac, ac.value().first_fragment())
+=======
+    explicit counter_cell_mutable_view(basic_atomic_cell_view<data::const_view::no> ac) noexcept
+        : basic_counter_cell_view<data::const_view::no>(ac, ac.value().first_chunk())
+>>>>>>> 5dd0ce6f6... yay, huge commite!
     {
         assert(!ac.value().is_fragmented());
     }

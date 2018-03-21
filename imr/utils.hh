@@ -158,18 +158,17 @@ public:
         };
 
         auto& alloc = current_allocator();
-        struct { } nalloc;
-       // alloc::object_allocator allocator(alloc);
-        auto obj_size = structure::size_when_serialized(serializer, nalloc);//allocator.get_sizer());
+        alloc::object_allocator allocator(alloc);
+        auto obj_size = structure::size_when_serialized(serializer, allocator.get_sizer());
         auto ptr = static_cast<uint8_t*>(alloc.alloc(migrate, obj_size + 7, 1));
-        /*try {
+        try {
             // FIXME: RAII to protect ptr
             allocator.allocate_all();
         } catch (...) {
             alloc.free(ptr, obj_size + 7);
             throw;
-        }*/
-        structure::serialize(ptr, serializer, nalloc);//allocator.get_serializer());
+        }
+        structure::serialize(ptr, serializer, allocator.get_serializer());
         //obj.set_data(ptr);
         return object(ptr);
     }

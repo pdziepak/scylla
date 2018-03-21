@@ -320,7 +320,9 @@ deletable_row& view_updates::get_view_row(const partition_key& base_key, const c
                 // FIXME!!
                 return bytes_view(linearized.emplace_back(std::move(b)));
             }
-            return c.as_collection_mutation().data;
+            // FIXME!!
+            auto b = c.as_collection_mutation().data.linearize();
+            return bytes_view(linearized.emplace_back(std::move(b)));
         }
     });
     auto& partition = partition_for(partition_key::from_range(_view->partition_key_columns() | get_value));

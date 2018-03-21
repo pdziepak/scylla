@@ -43,8 +43,8 @@ enum class const_view {
 
 struct cell {
     enum : size_t {
-        maximum_internal_storage_length = 16 * 1024,
-        maximum_external_chunk_length = 16 * 1024,
+        maximum_internal_storage_length = 4,//16 * 1024,
+        maximum_external_chunk_length = 128,// * 1024,
     };
 
     struct tags {
@@ -176,13 +176,12 @@ private:
         imr::alloc::context_factory<chunk_context>> lsa_chunk_migrate_fn;
 private:
     template<typename Serializer, typename Allocations>
-    static auto serialize_variable_value(Serializer&& serializer, Allocations&& allocations, bytes_view value) noexcept {
+    static auto serialize_variable_value(Serializer&& serializer, Allocations&& allocations, bytes_view value, bool force_internal = false) noexcept {
         auto after_size = serializer.serialize(value.size());
-        if (__builtin_expect(value.size() <= maximum_internal_storage_length, true)) {
+        if (__builtin_expect(force_internal || value.size() <= maximum_internal_storage_length, true)) {
             return after_size.template serialize_as<tags::data>(value).done();
         } else {
-            abort();
-            /*imr::placeholder<imr::pod<void*>> next_pointer_phldr;
+            imr::placeholder<imr::pod<void*>> next_pointer_phldr;
             auto next_pointer_position = after_size.position();
             auto cell_ser = after_size.template serialize_as<tags::pointer>(next_pointer_phldr);
 
@@ -208,7 +207,7 @@ private:
                     .serialize(bytes_view(value.begin() + offset, value.size() - offset))
                     .done();
             next_pointer_phldr.serialize(ptr);
-            return cell_ser.done();*/
+            return cell_ser.done();
         }
     }
 public:
@@ -248,12 +247,12 @@ public:
         };
     }
 
-    static auto make_live(const type_info& ti, api::timestamp_type ts, bytes_view value) noexcept {
-        return [&ti, ts, value] (auto&& serializer, auto&& allocations) noexcept {
+    static auto make_live(const type_info& ti, api::timestamp_type ts, bytes_view value, bool force_internal = false) noexcept {
+        return [&ti, ts, value, force_internal] (auto&& serializer, auto&& allocations) noexcept {
             auto after_expiring = serializer
                 .serialize(imr::set_flag<tags::live>(),
                            imr::set_flag<tags::empty>(value.empty()),
-                           imr::set_flag<tags::external_data>(!ti.is_fixed_size() && value.size() > maximum_internal_storage_length))
+                           imr::set_flag<tags::external_data>(!force_internal && !ti.is_fixed_size() && value.size() > maximum_internal_storage_length))
                 .template serialize_as_nested<tags::atomic_cell>()
                     .serialize(ts)
                     .skip();
@@ -262,14 +261,14 @@ public:
                     return after_expiring.template serialize_as<tags::fixed_value>(value);
                 } else {
                     return serialize_variable_value(after_expiring.template serialize_as_nested<tags::variable_value>(),
-                                                    allocations, value);
+                                                    allocations, value, force_internal);
 
                 }
             }().done().done();
         };
     }
 
-    static auto make_live(const type_info& ti, api::timestamp_type ts, bytes_view value, gc_clock::time_point expiry, gc_clock::duration ttl) noexcept {
+    static auto make_live(const type_info& ti, api::timestamp_type ts, bytes_view value, gc_clock::time_point expiry, gc_clock::duration ttl, bool force_internal = false) noexcept {
         return [&ti, ts, value, expiry, ttl] (auto&& serializer, auto&& allocations) noexcept {
             auto after_expiring = serializer
                 .serialize(imr::set_flag<tags::live>(),
@@ -350,14 +349,15 @@ class cell::context : public cell::minimal_context {
     type_info _type;
 public:
     class variable_value_context {
-        size_t _value_size;
+        bool _external_storage;
+        uint32_t _value_size;
     public:
-        explicit variable_value_context(size_t value_size) noexcept
-            : _value_size(value_size) { }
+        explicit variable_value_context(bool external_storage, uint32_t value_size) noexcept // FIXME is uint32_t ok?
+            : _external_storage(external_storage), _value_size(value_size) { }
 
         template<typename Tag>
         auto active_alternative_of() const noexcept {
-            if (_value_size > maximum_internal_storage_length) {
+            if (_external_storage) {
                 return value_data_variant::index_for<tags::pointer>();
             } else {
                 return value_data_variant::index_for<tags::data>();
@@ -403,13 +403,13 @@ public:
 template<>
 inline auto cell::context::context_for<cell::tags::variable_value>(const uint8_t* ptr) const noexcept {
     auto length = variable_value::get_member<tags::value_size>(ptr);
-    return variable_value_context(length.load());
+    return variable_value_context(_flags.get<tags::external_data>(), length.load());
 }
 
 template<>
 inline auto cell::context::context_for<cell::tags::collection>(const uint8_t* ptr) const noexcept {
     auto length = variable_value::get_member<tags::value_size>(ptr);
-    return variable_value_context(length.load());
+    return variable_value_context(_flags.get<tags::external_data>(), length.load());
 }
 
 
@@ -534,7 +534,7 @@ public:
     bytes_view first_chunk() const noexcept {
         return _first_chunk;
     }
-    bytes_view first_chunk() noexcept { // FIXME!!
+    bytes_mutable_view first_chunk() noexcept { // FIXME!!
         return bytes_mutable_view((int8_t*)_first_chunk.data(), _first_chunk.size());
     }
 
@@ -558,7 +558,7 @@ public:
 
     template<typename Function>
     // [[deprecated]]
-    auto with_linearized(Function&& fn) const {
+    decltype(auto) with_linearized(Function&& fn) const {
         bytes b;
         bytes_view bv;
         if (is_fragmented()) {
@@ -567,7 +567,7 @@ public:
         } else {
             bv = _first_chunk;
         }
-        fn(bv);
+        return fn(bv);
     }
 };
 
@@ -691,10 +691,15 @@ public:
                 [] (...) -> size_t { abort(); __builtin_unreachable(); }
         ), ctx);
     }
+
+    bool is_value_fragmented() const noexcept {
+        return flags_view().template get<tags::external_data>() && value_size() > maximum_external_chunk_length;
+    }
 };
 
 inline auto cell::copy_fn(const type_info& ti, const uint8_t* ptr)
 {
+    // copy should preserve external storage class
     // FIXME: This is far from optimal. We could just compute the size
     // of the buffer, memcpy() it and then deal with whatever objects the
     // original IMR object may own.
@@ -851,16 +856,31 @@ struct mover<imr::tagged_type<data::cell::tags::chunk_back_pointer, imr::pod<voi
 template<>
 struct destructor<data::cell::external_chunk> {
     static void run(uint8_t* ptr, data::fragment_chain_destructor_context ctx) {
-        ctx.next_chunk();
+        bool first = true;
+        while (true) {
+            ctx.next_chunk();
 
-        auto echk_view = data::cell::external_chunk::make_view(ptr);
-        auto ptr_view = echk_view.get<data::cell::tags::chunk_next>();
-        if (ctx.is_last_chunk()) {
-            imr::methods::destroy<data::cell::external_last_chunk>(static_cast<uint8_t*>(ptr_view.load()));
-        } else {
-            imr::methods::destroy<data::cell::external_chunk>(static_cast<uint8_t*>(ptr_view.load()), ctx);
+            auto echk_view = data::cell::external_chunk::make_view(ptr);
+            auto ptr_view = echk_view.get<data::cell::tags::chunk_next>();
+            if (ctx.is_last_chunk()) {
+                imr::methods::destroy<data::cell::external_last_chunk>(static_cast<uint8_t*>(ptr_view.load()));
+                current_allocator().free(ptr_view.load());
+                if (!first) {
+                    current_allocator().free(ptr);
+                }
+                break;
+            } else {
+                //imr::methods::destroy<data::cell::external_chunk>(static_cast<uint8_t*>(ptr_view.load()), ctx);
+                auto last = ptr;
+                ptr = static_cast<uint8_t*>(ptr_view.load());
+                if (!first) {
+                    current_allocator().free(last);
+                } else {
+                    first = false;
+                }
+            }
+            
         }
-        current_allocator().free(ptr_view.load());
     }
 };
 

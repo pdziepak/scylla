@@ -537,7 +537,8 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
     auto&& element_type = col_type->is_set() ? col_type->name_comparator() : col_type->value_comparator();
     if (_column_def.type->is_multi_cell()) {
         auto cell = cells.find_cell(_column_def.id);
-        auto&& elements = col_type->deserialize_mutation_form(cell->as_collection_mutation()).cells;
+      return cell->as_collection_mutation().data.with_linearized([&] (bytes_view collection_bv) {
+        auto&& elements = col_type->deserialize_mutation_form(collection_bv).cells;
         auto end = std::remove_if(elements.begin(), elements.end(), [now] (auto&& element) {
             return element.second.is_dead(now);
         });
@@ -578,6 +579,8 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
                 return false;
             }
         }
+        return true;
+      });
     } else {
         auto cell_value = get_value(schema, key, ckey, cells, now);
         if (!cell_value) {
