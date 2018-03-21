@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include <any>
 #include <cstdlib>
 #include <seastar/core/memory.hh>
 #include <seastar/util/alloc_failure_injector.hh>
@@ -32,10 +33,12 @@
 // destroyed. See standard_migrator() above for example. Both src and dst
 // are aligned as requested during alloc()/construct().
 class migrate_fn_type {
+    // I am too annoyed to write this right now.
+    std::any _migrators;
     uint32_t _align = 0;
     uint32_t _index;
 private:
-    static uint32_t register_migrator(const migrate_fn_type* m);
+    static uint32_t register_migrator(migrate_fn_type* m);
     static void unregister_migrator(uint32_t index);
 public:
     explicit migrate_fn_type(size_t align) : _align(align), _index(register_migrator(this)) {}

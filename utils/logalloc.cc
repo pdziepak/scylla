@@ -47,7 +47,7 @@ standard_allocation_strategy standard_allocation_strategy_instance;
 
 namespace {
 
-class migrators {
+class migrators : public enable_lw_shared_from_this<migrators> {
     std::vector<const migrate_fn_type*> _migrators;
     std::deque<uint32_t> _unused_ids;
 #ifndef DEBUG_LSA_SANITIZER
@@ -100,8 +100,8 @@ public:
 static
 migrators&
 static_migrators() {
-    static thread_local migrators obj;
-    return obj;
+    static thread_local lw_shared_ptr<migrators> obj = make_lw_shared<migrators>();
+    return *obj;
 }
 
 }
@@ -114,8 +114,11 @@ thread_local migrators* static_migrators = &::static_migrators();
 
 
 uint32_t
-migrate_fn_type::register_migrator(const migrate_fn_type* m) {
-    return static_migrators().add(m);
+migrate_fn_type::register_migrator(migrate_fn_type* m) {
+    auto& migrators = static_migrators();
+    auto idx = migrators.add(m);
+    m->_migrators = migrators.shared_from_this();
+    return idx;
 }
 
 void
