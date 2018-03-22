@@ -185,7 +185,37 @@ collection_mutation::operator collection_mutation_view() const
 }
 
 // FREE!
-bool atomic_cell_or_collection::equal(const abstract_type& t, const atomic_cell_or_collection& other) const {
+bool atomic_cell_or_collection::equal(const abstract_type& t, const atomic_cell_or_collection& other) const
+{
+    using dc = data::cell;
+
+    auto ptr_a = _data.get();
+    auto ptr_b = other._data.get();
+
+    if (!ptr_a || !ptr_b) {
+        return !ptr_a && !ptr_b;
+    }
+
+    auto flags_a = dc::structure::get_member<dc::tags::flags>(ptr_a);
+    auto flags_b = dc::structure::get_member<dc::tags::flags>(ptr_b);
+
+    // FIXME: is fast path fast?
+    if (!flags_a.get<dc::tags::external_data>() && !flags_b.get<dc::tags::external_data>()) {
+        auto ctx_a = dc::context(flags_a, t.imr_state().type_info());
+        auto ctx_b = dc::context(flags_b, t.imr_state().type_info());
+
+        auto size_a = data::cell::structure::serialized_object_size(ptr_a, ctx_a);
+        auto size_b = data::cell::structure::serialized_object_size(ptr_b, ctx_b);
+        if (size_a != size_b) {
+            return false;
+        }
+        return std::equal(ptr_a, ptr_a + size_a, ptr_b);
+    }
+
+    if (!flags_a.get<dc::tags::external_data>() || !flags_b.get<dc::tags::external_data>()) {
+        return false;
+    }
+
     if (t.is_atomic()) {
         auto a = atomic_cell_view::from_bytes(t.imr_state().type_info(), _data);
         auto b = atomic_cell_view::from_bytes(t.imr_state().type_info(), other._data);
@@ -195,19 +225,26 @@ bool atomic_cell_or_collection::equal(const abstract_type& t, const atomic_cell_
             }
             return a.timestamp() == b.timestamp() && a.value() == b.value();
         }
-    return true;
+        // expiging
+        return true;
     } else {
-        return true; //boost::equal(as_collection_mutation().data, other.as_collection_mutation().data);
+        return as_collection_mutation().data == other.as_collection_mutation().data;
     }
 }
 
 size_t atomic_cell_or_collection::external_memory_usage(const abstract_type& t) const
 {
+    if (!_data.get()) {
+        return 0;
+    }
     auto ctx = data::cell::context(_data.get(), t.imr_state().type_info());
     return data::cell::structure::serialized_object_size(_data.get(), ctx);
 }
 
 std::ostream& operator<<(std::ostream& os, const atomic_cell_or_collection& c) {
+    if (!c._data.get()) {
+        return os << "{ null atomic_cell_or_collection }";
+    }
     using dc = data::cell;
     os << "{ ";
     if (dc::structure::get_member<dc::tags::flags>(c._data.get()).get<dc::tags::collection>()) {
