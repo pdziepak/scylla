@@ -43,8 +43,8 @@ enum class const_view {
 
 struct cell {
     enum : size_t {
-        maximum_internal_storage_length = 4,//16 * 1024,
-        maximum_external_chunk_length = 128,// * 1024,
+        maximum_internal_storage_length = 16 * 1024,
+        maximum_external_chunk_length = 16 * 1024,
     };
 
     struct tags {
