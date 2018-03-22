@@ -445,6 +445,12 @@ public:
         const uint8_t* _next;
         size_t _left;
     public:
+        using iterator_category	= std::forward_iterator_tag;
+        using value_type = bytes_view;
+        using pointer = const bytes_view*;
+        using reference = const bytes_view&;
+        using difference_type = std::ptrdiff_t;
+
         // FIXME: make this a real iterator
         iterator(bytes_view bv, size_t total, const uint8_t* next) noexcept
             : _view(bv), _next(next), _left(total) { }
@@ -488,6 +494,8 @@ public:
             return !(*this == other);
         }
     };
+    
+    using const_iterator = iterator;
 
     auto begin() const {
         return iterator(_first_chunk, _remaining_size, _next);
