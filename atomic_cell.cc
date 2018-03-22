@@ -206,3 +206,14 @@ size_t atomic_cell_or_collection::external_memory_usage(const abstract_type& t) 
     auto ctx = data::cell::context(_data.get(), t.imr_state().type_info());
     return data::cell::structure::serialized_object_size(_data.get(), ctx);
 }
+
+std::ostream& operator<<(std::ostream& os, const atomic_cell_or_collection& c) {
+    using dc = data::cell;
+    os << "{ ";
+    if (dc::structure::get_member<dc::tags::flags>(c._data.get()).get<dc::tags::collection>()) {
+        os << "collection";
+    } else {
+        os << "atomic cell";
+    }
+    return os << " @" << static_cast<const void*>(c._data.get()) << " }";
+}
