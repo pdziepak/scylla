@@ -417,18 +417,34 @@ def add_param_writer_basic_type(name, base_state, typ, var_type = "", var_index 
     set_command = "_state.f.end(_out);" if var_type is not "" else ""
     return_command = "{ _out, std::move(_state._parent) }" if var_type is not "" and not root_node else "{ _out, std::move(_state) }"
 
+    allow_fragmented = False
     if typ in ['bytes', 'sstring']:
         typ += '_view'
+        allow_fragmented = True
     else:
         typ = 'const ' + typ + '&'
 
-    return Template(reindent(4, """
+    writer = Template(reindent(4, """
         after_${base_state}__$name<Output> write_$name$var_type($typ t) && {
             $set_varient_index
             serialize(_out, t);
             $set_command
             return $return_command;
         }""")).substitute(locals())
+    if allow_fragmented:
+        writer += Template(reindent(4, """
+        template<typename FragmentedBuffer>
+        GCC6_CONCEPT(requires FragmentRange<FragmentedBuffer>)
+        after_${base_state}__$name<Output> write_fragmented_$name$var_type(FragmentedBuffer&& fragments) && {
+            $set_varient_index
+            using boost::range::for_each;
+            for_each(fragments, [&] ($typ t) {
+                serialize(_out, t);
+            });
+            $set_command
+            return $return_command;
+        }""")).substitute(locals())
+    return writer
 
 def add_param_writer_object(name, base_state, typ, var_type = "", var_index = None, root_node = False):
     var_type1 = "_" + var_type if var_type != "" else ""
