@@ -200,3 +200,9 @@ bool atomic_cell_or_collection::equal(const abstract_type& t, const atomic_cell_
         return true; //boost::equal(as_collection_mutation().data, other.as_collection_mutation().data);
     }
 }
+
+size_t atomic_cell_or_collection::external_memory_usage(const abstract_type& t) const
+{
+    auto ctx = data::cell::context(_data.get(), t.imr_state().type_info());
+    return data::cell::structure::serialized_object_size(_data.get(), ctx);
+}

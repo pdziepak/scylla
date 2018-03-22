@@ -61,9 +61,7 @@ public:
     collection_mutation_view as_collection_mutation() const;
     bytes_view serialize() const;
     bool equal(const abstract_type& t, const atomic_cell_or_collection& other) const;
-    size_t external_memory_usage(const abstract_type&) const {
-        return 0; //_data.external_memory_usage();
-    }
+    size_t external_memory_usage(const abstract_type&) const;
     friend std::ostream& operator<<(std::ostream&, const atomic_cell_or_collection&);
 };
 
