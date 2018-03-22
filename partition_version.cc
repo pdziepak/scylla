@@ -70,9 +70,9 @@ partition_version::~partition_version()
     }
 }
 
-size_t partition_version::size_in_allocator(allocation_strategy& allocator) const {
+size_t partition_version::size_in_allocator(const schema& s, allocation_strategy& allocator) const {
     return allocator.object_memory_size_in_allocator(this) +
-           partition().external_memory_usage();
+           partition().external_memory_usage(s);
 }
 
 namespace {
