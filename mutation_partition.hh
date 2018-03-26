@@ -326,6 +326,7 @@ public:
     cell_hash_opt cell_hash_for(column_id id) const;
 
     void prepare_hash(const schema& s, column_kind kind) const;
+    void clear_hash() const;
 
     friend std::ostream& operator<<(std::ostream& os, const row& r);
 };
