@@ -257,7 +257,7 @@ public:
                     .serialize(ts)
                     .skip();
             return [&] {
-                if (ti.is_fixed_size() || value.empty()) {
+                if (ti.is_fixed_size()) {
                     return after_expiring.template serialize_as<tags::fixed_value>(value);
                 } else {
                     return serialize_variable_value(after_expiring.template serialize_as_nested<tags::variable_value>(),
@@ -282,7 +282,7 @@ public:
                         .serialize(expiry.time_since_epoch().count())
                         .done();
             return [&] {
-                if (ti.is_fixed_size() || value.empty()) {
+                if (ti.is_fixed_size()) {
                     return after_expiring.template serialize_as<tags::fixed_value>(value);
                 } else {
                     return serialize_variable_value(after_expiring.template serialize_as_nested<tags::variable_value>(),
@@ -415,14 +415,17 @@ inline auto cell::context::context_for<cell::tags::collection>(const uint8_t* pt
 
 template<>
 inline auto cell::context::active_alternative_of<cell::tags::value>() const noexcept {
-    if (!_flags.get<tags::live>()) {
-        return cell::value_variant::index_for<tags::dead>();
-    } else if (_flags.get<tags::counter_update>()) {
-        return cell::value_variant::index_for<tags::counter_update>();
-    } else if (_type.is_fixed_size() || _flags.get<tags::empty>()) {
-        return cell::value_variant::index_for<tags::fixed_value>();
+    if (_flags.get<tags::live>()) {
+        if (__builtin_expect(_flags.get<tags::counter_update>(), false)) {
+            return cell::value_variant::index_for<tags::counter_update>();
+        }
+        if (_type.is_fixed_size()) {
+            return cell::value_variant::index_for<tags::fixed_value>();
+        } else {
+            return cell::value_variant::index_for<tags::variable_value>();
+        }
     } else {
-        return cell::value_variant::index_for<tags::variable_value>();
+        return cell::value_variant::index_for<tags::dead>();
     }
 }
 
