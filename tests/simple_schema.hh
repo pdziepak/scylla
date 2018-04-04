@@ -103,7 +103,7 @@ public:
         if (!ac.is_live()) {
             throw std::runtime_error("cell is dead");
         }
-        return std::make_pair(value_cast<sstring>(utf8_type->deserialize(ac.value())), ac.timestamp());
+        return std::make_pair(value_cast<sstring>(utf8_type->deserialize(ac.value().linearize())), ac.timestamp());
     }
 
     mutation_fragment make_row(const clustering_key& key, sstring v) {
@@ -111,6 +111,12 @@ public:
         row.cells().apply(*_s->get_column_definition(to_bytes(sstring("v"))),
             atomic_cell::make_live(*_v_def.type, new_timestamp(), data_value(v).serialize()));
         return mutation_fragment(std::move(row));
+    }
+
+    mutation_fragment make_row(const clustering_key& key, bytes serialized_value) {
+        auto mf = mutation_fragment(mutation_fragment::clustering_row_tag_t(), key);
+        mf.as_mutable_clustering_row().cells().apply(_v_def, atomic_cell::make_live(*_v_def.type, new_timestamp(), serialized_value));
+        return mf;
     }
 
     api::timestamp_type add_static_row(mutation& m, sstring s1, api::timestamp_type t = api::missing_timestamp) {

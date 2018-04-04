@@ -1736,7 +1736,7 @@ void sstable::write_cell(file_writer& out, atomic_cell_view cell, const column_d
         column_mask mask = column_mask::counter;
         write(out, mask, int64_t(0), timestamp);
 
-        counter_cell_view ccv(cell);
+      counter_cell_view::with_linearized(cell, [&] (counter_cell_view ccv) {
         auto shard_count = ccv.shard_count();
 
         static constexpr auto header_entry_size = sizeof(int16_t);
@@ -1762,7 +1762,7 @@ void sstable::write_cell(file_writer& out, atomic_cell_view cell, const column_d
                 write_shard(s);
             }
         }
-
+      });
         _c_stats.update_max_local_deletion_time(std::numeric_limits<int>::max());
     } else if (cell.is_live_and_has_ttl()) {
         // expiring cell
@@ -1770,7 +1770,7 @@ void sstable::write_cell(file_writer& out, atomic_cell_view cell, const column_d
         column_mask mask = column_mask::expiration;
         uint32_t ttl = cell.ttl().count();
         uint32_t expiration = cell.expiry().time_since_epoch().count();
-        disk_string_view<uint32_t> cell_value { cell.value() };
+        disk_data_value_view<uint32_t> cell_value { cell.value() };
 
         _c_stats.update_max_local_deletion_time(expiration);
         // tombstone histogram is updated with expiration time because if ttl is longer
@@ -1783,7 +1783,7 @@ void sstable::write_cell(file_writer& out, atomic_cell_view cell, const column_d
         // regular cell
 
         column_mask mask = column_mask::none;
-        disk_string_view<uint32_t> cell_value { cell.value() };
+        disk_data_value_view<uint32_t> cell_value { cell.value() };
 
         _c_stats.update_max_local_deletion_time(std::numeric_limits<int>::max());
 
@@ -1872,8 +1872,9 @@ void sstable::write_range_tombstone(file_writer& out,
 }
 
 void sstable::write_collection(file_writer& out, const composite& clustering_key, const column_definition& cdef, collection_mutation_view collection) {
+  collection.data.with_linearized([&] (bytes_view collection_bv) {
     auto t = static_pointer_cast<const collection_type_impl>(cdef.type);
-    auto mview = t->deserialize_mutation_form(collection);
+    auto mview = t->deserialize_mutation_form(collection_bv);
     const bytes& column_name = cdef.name();
     if (mview.tomb) {
         write_range_tombstone(out, clustering_key, composite::eoc::start, clustering_key, composite::eoc::end, { column_name }, mview.tomb);
@@ -1882,6 +1883,7 @@ void sstable::write_collection(file_writer& out, const composite& clustering_key
         index_and_write_column_name(out, clustering_key, { column_name, cp.first });
         write_cell(out, cp.second, cdef);
     }
+  });
 }
 
 // This function is about writing a clustered_row to data file according to SSTables format.

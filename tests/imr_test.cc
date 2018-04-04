@@ -635,7 +635,7 @@ BOOST_AUTO_TEST_CASE(test_nested_structure) {
         BOOST_CHECK_EQUAL(view.get<A>().load(), a_value);
         BOOST_CHECK_EQUAL(view.get<B>(ctx).get<B>().get().load(), b1_value);
         BOOST_CHECK(boost::range::equal(view.get<B>(ctx).get<C>(ctx), c1_data));
-        BOOST_CHECK_EQUAL(view.get<C>().load(), c_value);
+        BOOST_CHECK_EQUAL(view.get<C>(ctx).load(), c_value);
     }
 }
 
