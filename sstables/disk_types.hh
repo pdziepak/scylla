@@ -29,7 +29,7 @@
 #include <unordered_map>
 #include <type_traits>
 #include <deque>
-#include "data/cell.hh"
+#include "atomic_cell.hh"
 
 namespace sstables {
 
@@ -60,7 +60,7 @@ struct disk_string_view {
 
 template<typename SizeType>
 struct disk_data_value_view {
-    data::value_view value;
+    atomic_cell_value_view value;
 };
 
 template <typename Size, typename Members>
