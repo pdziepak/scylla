@@ -507,12 +507,12 @@ public:
         });
     }
 
-    atomic_cell make_atomic_cell(const abstract_type& type, uint64_t timestamp, bytes_view value, uint32_t ttl, uint32_t expiration) {
+    atomic_cell make_atomic_cell(const abstract_type& type, uint64_t timestamp, bytes_view value, uint32_t ttl, uint32_t expiration, atomic_cell::collection_member cm) {
         if (ttl) {
             return atomic_cell::make_live(type, timestamp, value,
-                                          gc_clock::time_point(gc_clock::duration(expiration)), gc_clock::duration(ttl));
+                                          gc_clock::time_point(gc_clock::duration(expiration)), gc_clock::duration(ttl), cm);
         } else {
-            return atomic_cell::make_live(type, timestamp, value);
+            return atomic_cell::make_live(type, timestamp, value, cm);
         }
     }
 
@@ -524,12 +524,12 @@ public:
             }
             if (is_multi_cell) {
                 auto ctype = static_pointer_cast<const collection_type_impl>(col.cdef->type);
-                auto ac = make_atomic_cell(*ctype->value_comparator(), timestamp, value, ttl, expiration);
+                auto ac = make_atomic_cell(*ctype->value_comparator(), timestamp, value, ttl, expiration, atomic_cell::collection_member::yes);
                 update_pending_collection(col.cdef, to_bytes(col.collection_extra_data), std::move(ac));
                 return;
             }
 
-            auto ac = make_atomic_cell(*col.cdef->type, timestamp, value, ttl, expiration);
+            auto ac = make_atomic_cell(*col.cdef->type, timestamp, value, ttl, expiration, atomic_cell::collection_member::no);
             if (col.is_static) {
                 _in_progress->as_mutable_static_row().set_cell(*(col.cdef), std::move(ac));
                 return;
