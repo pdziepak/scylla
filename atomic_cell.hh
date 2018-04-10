@@ -34,6 +34,7 @@
 #include "utils/compare_unsigned.hh"
 
 class abstract_type;
+class collection_type_impl;
 
 template<typename T, typename Input>
 static inline
@@ -448,8 +449,8 @@ class collection_mutation {
 public:
     managed_bytes data;
     collection_mutation() {}
-    collection_mutation(managed_bytes b) : data(std::move(b)) {}
-    collection_mutation(collection_mutation_view v);
+    collection_mutation(const collection_type_impl&, collection_mutation_view v);
+    collection_mutation(const collection_type_impl&, bytes_view bv);
     operator collection_mutation_view() const;
 };
 
@@ -460,8 +461,13 @@ public:
 };
 
 inline
-collection_mutation::collection_mutation(collection_mutation_view v)
+collection_mutation::collection_mutation(const collection_type_impl&, collection_mutation_view v)
         : data(v.data.linearize()) {
+}
+
+inline
+collection_mutation::collection_mutation(const collection_type_impl&, bytes_view bv)
+        : data(bv) {
 }
 
 inline
