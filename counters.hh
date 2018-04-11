@@ -79,7 +79,7 @@ static_assert(std::is_pod<counter_id>::value, "counter_id should be a POD type")
 
 std::ostream& operator<<(std::ostream& os, const counter_id& id);
 
-template<data::const_view is_const>
+template<const_view is_const>
 class basic_counter_shard_view {
     enum class offset : unsigned {
         id = 0u,
@@ -88,7 +88,7 @@ class basic_counter_shard_view {
         total_size = unsigned(logical_clock) + sizeof(int64_t),
     };
 private:
-    using pointer_type = std::conditional_t<is_const == data::const_view::yes, const signed char*, signed char*>;
+    using pointer_type = std::conditional_t<is_const == const_view::yes, const signed char*, signed char*>;
     pointer_type _base;
 private:
     template<typename T>
@@ -139,7 +139,7 @@ public:
     };
 };
 
-using counter_shard_view = basic_counter_shard_view<data::const_view::yes>;
+using counter_shard_view = basic_counter_shard_view<const_view::yes>;
 
 std::ostream& operator<<(std::ostream& os, counter_shard_view csv);
 
@@ -199,7 +199,7 @@ public:
         return do_apply(other);
     }
 
-    static size_t serialized_size() {
+    static constexpr size_t serialized_size() {
         return counter_shard_view::size;
     }
     void serialize(bytes::iterator& out) const {
@@ -253,15 +253,33 @@ public:
     }
 
     atomic_cell build(api::timestamp_type timestamp) const {
-        return atomic_cell::make_live_from_serializer(*counter_type, timestamp, serialized_size(), [this] (bytes::iterator out) {
-            serialize(out);
-        });
+        // If we can assume that the counter shards never cross fragment boundaries
+        // the serialisation code gets much simpler.
+        static_assert(data::cell::maximum_external_chunk_length % counter_shard::serialized_size() == 0);
+
+        auto ac = atomic_cell::make_live_uninitialized(*counter_type, timestamp, serialized_size());
+
+        auto dst_it = ac.value().begin();
+        auto dst_current = *dst_it++;
+        for (auto&& cs : _shards) {
+            if (dst_current.empty()) {
+                dst_current = *dst_it++;
+            }
+            assert(!dst_current.empty());
+            auto value_dst = dst_current.data();
+            cs.serialize(value_dst);
+            dst_current.remove_prefix(counter_shard::serialized_size());
+        }
+        return ac;
     }
 
     static atomic_cell from_single_shard(api::timestamp_type timestamp, const counter_shard& cs) {
-        return atomic_cell::make_live_from_serializer(*counter_type, timestamp, counter_shard::serialized_size(), [&cs] (bytes::iterator out) {
-            cs.serialize(out);
-        });
+        // We don't really need to bother with fragmentation here.
+        static_assert(data::cell::maximum_external_chunk_length >= counter_shard::serialized_size());
+        auto ac = atomic_cell::make_live_uninitialized(*counter_type, timestamp, counter_shard::serialized_size());
+        auto dst = ac.value().first_fragment().begin();
+        cs.serialize(dst);
+        return ac;
     }
 
     class inserter_iterator : public std::iterator<std::output_iterator_tag, counter_shard> {
@@ -288,10 +306,10 @@ public:
 // <counter_id>   := <int64_t><int64_t>
 // <shard>        := <counter_id><int64_t:value><int64_t:logical_clock>
 // <counter_cell> := <shard>*
-template<data::const_view is_const>
+template<const_view is_const>
 class basic_counter_cell_view {
 protected:
-    using linearized_value_view = std::conditional_t<is_const == data::const_view::yes,
+    using linearized_value_view = std::conditional_t<is_const == const_view::yes,
                                                      bytes_view, bytes_mutable_view>;
     using pointer_type = typename linearized_value_view::pointer;
     basic_atomic_cell_view<is_const> _cell;
@@ -387,11 +405,11 @@ public:
     }
 };
 
-struct counter_cell_view : basic_counter_cell_view<data::const_view::yes> {
+struct counter_cell_view : basic_counter_cell_view<const_view::yes> {
     using basic_counter_cell_view::basic_counter_cell_view;
 
     template<typename Function>
-    static decltype(auto) with_linearized(basic_atomic_cell_view<data::const_view::yes> ac, Function&& fn) {
+    static decltype(auto) with_linearized(basic_atomic_cell_view<const_view::yes> ac, Function&& fn) {
         return ac.value().with_linearized([&] (bytes_view value_view) {
             counter_cell_view ccv(ac, value_view);
             return fn(ccv);
@@ -411,11 +429,11 @@ struct counter_cell_view : basic_counter_cell_view<data::const_view::yes> {
     friend std::ostream& operator<<(std::ostream& os, counter_cell_view ccv);
 };
 
-struct counter_cell_mutable_view : basic_counter_cell_view<data::const_view::no> {
+struct counter_cell_mutable_view : basic_counter_cell_view<const_view::no> {
     using basic_counter_cell_view::basic_counter_cell_view;
 
     explicit counter_cell_mutable_view(atomic_cell_mutable_view ac) noexcept
-        : basic_counter_cell_view<data::const_view::no>(ac, ac.value().first_fragment())
+        : basic_counter_cell_view<const_view::no>(ac, ac.value().first_fragment())
     {
         assert(!ac.value().is_fragmented());
     }
