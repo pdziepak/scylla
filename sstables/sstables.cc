@@ -2759,11 +2759,10 @@ void sstable_writer_m::consume(tombstone t) {
 void sstable_writer_m::write_cell(file_writer& writer, atomic_cell_view cell, const column_definition& cdef,
         const row_time_properties& properties, bytes_view cell_path) {
 
-    bytes_view cell_value = cell.value();
-    bool has_value = !cell_value.empty();
+    bool has_value = false;
     bool is_deleted = cell.is_dead(_sst._now);
-    if (is_deleted) {
-        has_value = false;
+    if (!is_deleted) {
+        has_value = !cell.value().empty();
     }
     bool use_row_timestamp = (properties.timestamp == cell.timestamp());
     bool is_row_expiring = properties.ttl.has_value();
@@ -2809,7 +2808,7 @@ void sstable_writer_m::write_cell(file_writer& writer, atomic_cell_view cell, co
     }
 
     if (has_value) {
-        write_cell_value(writer, *cdef.type, cell_value);
+        write_cell_value(writer, *cdef.type, cell.value());
     }
 }
 
