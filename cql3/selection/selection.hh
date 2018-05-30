@@ -84,12 +84,13 @@ private:
     const bool _collect_timestamps;
     const bool _collect_TTLs;
     const bool _contains_static_columns;
+    bool _is_trivial;
 protected:
     selection(schema_ptr schema,
         std::vector<const column_definition*> columns,
         std::vector<::shared_ptr<column_specification>> metadata_,
         bool collect_timestamps,
-        bool collect_TTLs);
+        bool collect_TTLs, bool is_trivial = false);
 
     virtual ~selection() {}
 public:
@@ -222,6 +223,8 @@ public:
             throw exceptions::invalid_request_exception(sprint(msg, std::forward<Args>(args)...));
         }
     }
+
+    bool is_trivial() const { return _is_trivial; }
 
     friend class result_set_builder;
 };
