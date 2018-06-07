@@ -56,6 +56,7 @@
 #include <lz4.h>
 
 #include "response.hh"
+#include "utils/reusable_buffer.hh"
 
 namespace cql_transport {
 
@@ -1540,12 +1541,16 @@ void cql_server::response::compress(cql_compression compression)
 
 void cql_server::response::compress_lz4()
 {
-    auto view = _body.linearize();
+    static thread_local utils::reusable_buffer input_buffer;
+    static thread_local utils::reusable_buffer output_buffer;
+
+    auto view = input_buffer.get_linearized_view(_body);
     const char* input = reinterpret_cast<const char*>(view.data());
     size_t input_len = view.size();
-    std::vector<char> comp;
-    comp.resize(LZ4_COMPRESSBOUND(input_len) + 4);
-    char *output = comp.data();
+
+    size_t output_len = LZ4_COMPRESSBOUND(input_len) + 4;
+  _body = output_buffer.make_buffer(output_len, [&] (bytes_mutable_view output_view) {
+    char* output = reinterpret_cast<char*>(output_view.data());
     output[0] = (input_len >> 24) & 0xFF;
     output[1] = (input_len >> 16) & 0xFF;
     output[2] = (input_len >> 8) & 0xFF;
@@ -1558,27 +1563,27 @@ void cql_server::response::compress_lz4()
     if (ret == 0) {
         throw std::runtime_error("CQL frame LZ4 compression failure");
     }
-    size_t output_len = ret + 4;
-    comp.resize(output_len);
-    _body = { };
-    _body.write(comp.data(), comp.size());
+    return ret + 4;
+  });
 }
 
 void cql_server::response::compress_snappy()
 {
-    auto view = _body.linearize();
+    static thread_local utils::reusable_buffer input_buffer;
+    static thread_local utils::reusable_buffer output_buffer;
+
+    auto view = input_buffer.get_linearized_view(_body);
     const char* input = reinterpret_cast<const char*>(view.data());
     size_t input_len = view.size();
-    std::vector<char> comp;
+
     size_t output_len = snappy_max_compressed_length(input_len);
-    comp.resize(output_len);
-    char *output = comp.data();
+  _body = output_buffer.make_buffer(output_len, [&] (bytes_mutable_view output_view) {
+    char* output = reinterpret_cast<char*>(output_view.data());
     if (snappy_compress(input, input_len, output, &output_len) != SNAPPY_OK) {
         throw std::runtime_error("CQL frame Snappy compression failure");
     }
-    comp.resize(output_len);
-    _body = { };
-    _body.write(comp.data(), comp.size());
+    return output_len;
+  });
 }
 
 void cql_server::response::serialize(const event::schema_change& event, uint8_t version)
