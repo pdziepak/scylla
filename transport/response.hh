@@ -84,7 +84,7 @@ public:
     void write_value(bytes_opt value);
     void write(const cql3::metadata& m, bool skip = false);
     void write(const cql3::prepared_metadata& m, uint8_t version);
-    future<> output(output_stream<char>& out, uint8_t version, cql_compression compression);
+    scattered_message<char> make_message(uint8_t version, cql_compression compression);
 
     cql_binary_opcode opcode() const {
         return _opcode;
