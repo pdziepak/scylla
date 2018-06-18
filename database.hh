@@ -644,12 +644,12 @@ public:
 
     logalloc::occupancy_stats occupancy() const;
 private:
-    column_family(schema_ptr schema, config cfg, db::commitlog* cl, compaction_manager&, cell_locker_stats& cl_stats);
+    column_family(schema_ptr schema, config cfg, db::commitlog* cl, compaction_manager&, cell_locker_stats& cl_stats, cache_tracker& row_cache_tracker);
 public:
-    column_family(schema_ptr schema, config cfg, db::commitlog& cl, compaction_manager& cm, cell_locker_stats& cl_stats)
-        : column_family(schema, std::move(cfg), &cl, cm, cl_stats) {}
-    column_family(schema_ptr schema, config cfg, no_commitlog, compaction_manager& cm, cell_locker_stats& cl_stats)
-        : column_family(schema, std::move(cfg), nullptr, cm, cl_stats) {}
+    column_family(schema_ptr schema, config cfg, db::commitlog& cl, compaction_manager& cm, cell_locker_stats& cl_stats, cache_tracker& row_cache_tracker)
+        : column_family(schema, std::move(cfg), &cl, cm, cl_stats, row_cache_tracker) {}
+    column_family(schema_ptr schema, config cfg, no_commitlog, compaction_manager& cm, cell_locker_stats& cl_stats, cache_tracker& row_cache_tracker)
+        : column_family(schema, std::move(cfg), nullptr, cm, cl_stats, row_cache_tracker) {}
     column_family(column_family&&) = delete; // 'this' is being captured during construction
     ~column_family();
     const schema_ptr& schema() const { return _schema; }
@@ -1162,6 +1162,8 @@ private:
 
     db::timeout_semaphore _view_update_concurrency_sem{100}; // Stand-in hack for #2538
 
+    cache_tracker _row_cache_tracker;
+
     concrete_execution_stage<future<lw_shared_ptr<query::result>>,
         column_family*,
         schema_ptr,
@@ -1227,6 +1229,8 @@ public:
     database(const db::config&, database_config dbcfg);
     database(database&&) = delete;
     ~database();
+
+    cache_tracker& row_cache_tracker() { return _row_cache_tracker; }
 
     void update_version(const utils::UUID& version);
 
