@@ -122,6 +122,21 @@ SEASTAR_THREAD_TEST_CASE(test_view) {
     };
 
     for (auto& frag_buffer : buffers) {
+        auto frag_view = fragmented_temporary_buffer::view(frag_buffer);
+        test(frag_view);
+
+        frag_view.remove_prefix(sizeof(value1) - 1);
+        data_view.remove_prefix(sizeof(value1) - 1);
+        test(frag_view);
+
+        frag_view.remove_prefix(data_view.size());
+        data_view.remove_prefix(data_view.size());
+        test(frag_view);
+
+        data_view = bytes_view(data);
+    }
+
+    for (auto& frag_buffer : buffers) {
         test(fragmented_temporary_buffer::view(frag_buffer));
 
         frag_buffer.remove_prefix(sizeof(value1) - 1);
