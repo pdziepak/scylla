@@ -75,7 +75,9 @@ private:
                 new_view.cells.emplace_back(std::move(c));
             }
         }
-        dst.apply(new_def, ctype->serialize_mutation_form(std::move(new_view)));
+        if (new_view.tomb || !new_view.cells.empty()) {
+            dst.apply(new_def, ctype->serialize_mutation_form(std::move(new_view)));
+        }
       });
     }
 public:
