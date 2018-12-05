@@ -31,6 +31,7 @@
 class flat_reader_assertions {
     flat_mutation_reader _reader;
     dht::partition_range _pr;
+    range_tombstone_list _tombstones;
 private:
     mutation_fragment_opt read_next() {
         return _reader(db::no_timeout).get0();
@@ -38,6 +39,7 @@ private:
 public:
     flat_reader_assertions(flat_mutation_reader reader)
         : _reader(std::move(reader))
+        , _tombstones(*_reader.schema())
     { }
 
     flat_reader_assertions& produces_partition_start(const dht::decorated_key& dk,
@@ -56,6 +58,7 @@ public:
         if (tomb && mfopt->as_partition_start().partition_tombstone() != *tomb) {
             BOOST_FAIL(format("Expected: partition start with tombstone {}, got: {}", *tomb, mutation_fragment::printer(*_reader.schema(), *mfopt)));
         }
+        _tombstones.clear();
         return *this;
     }
 
@@ -71,7 +74,7 @@ public:
         return *this;
     }
 
-    flat_reader_assertions& produces_row_with_key(const clustering_key& ck) {
+    flat_reader_assertions& produces_row_with_key(const clustering_key& ck, std::optional<api::timestamp_type> active_range_tombstone = std::nullopt) {
         BOOST_TEST_MESSAGE(format("Expect {}", ck));
         auto mfopt = read_next();
         if (!mfopt) {
@@ -83,6 +86,20 @@ public:
         auto& actual = mfopt->as_clustering_row().key();
         if (!actual.equal(*_reader.schema(), ck)) {
             BOOST_FAIL(format("Expected row with key {}, but key is {}", ck, actual));
+        }
+        if (active_range_tombstone) {
+            BOOST_CHECK_EQUAL(*active_range_tombstone, _tombstones.search_tombstone_covering(*_reader.schema(), ck).timestamp);
+        }
+        return *this;
+    }
+
+    flat_reader_assertions& may_produce_tombstones() {
+        while (mutation_fragment* next = _reader.peek(db::no_timeout).get0()) {
+            if (!next->is_range_tombstone()) {
+                break;
+            }
+            BOOST_TEST_MESSAGE(format("Received range tombstone: {}", mutation_fragment::printer(*_reader.schema(), *next)));
+            _tombstones.apply(*_reader.schema(), _reader(db::no_timeout).get0()->as_range_tombstone());
         }
         return *this;
     }
@@ -206,13 +223,16 @@ public:
             BOOST_FAIL(format("Expected range tombstone {}, but got {}", rt, mutation_fragment::printer(*_reader.schema(), *mfo)));
         }
         const schema& s = *_reader.schema();
+        _tombstones.apply(s, mfo->as_range_tombstone());
         range_tombstone_list actual_list(s);
         position_in_partition::equal_compare eq(s);
         while (mutation_fragment* next = _reader.peek(db::no_timeout).get0()) {
             if (!next->is_range_tombstone() || !eq(next->position(), mfo->position())) {
                 break;
             }
-            actual_list.apply(s, _reader(db::no_timeout).get0()->as_range_tombstone());
+            auto rt = _reader(db::no_timeout).get0()->as_range_tombstone();
+            actual_list.apply(s, rt);
+            _tombstones.apply(s, rt);
         }
         actual_list.apply(s, mfo->as_range_tombstone());
         {
@@ -236,6 +256,7 @@ public:
         if (!mfopt->is_end_of_partition()) {
             BOOST_FAIL(format("Expected partition end but got {}", mutation_fragment::printer(*_reader.schema(), *mfopt)));
         }
+        _tombstones.clear();
         return *this;
     }
 
@@ -246,6 +267,9 @@ public:
         }
         if (!mfopt->equal(s, mf)) {
             BOOST_FAIL(format("Expected {}, but got {}", mutation_fragment::printer(*_reader.schema(), mf), mutation_fragment::printer(*_reader.schema(), *mfopt)));
+        }
+        if (mf.is_range_tombstone()) {
+            _tombstones.apply(*_reader.schema(), mf.as_range_tombstone());
         }
         return *this;
     }
@@ -279,6 +303,9 @@ public:
         clustering_key::equality ck_eq(*_reader.schema());
         if (!ck_eq(mfopt->key(), ck)) {
             BOOST_FAIL(format("Expected key {}, got: {}", ck, mfopt->key()));
+        }
+        if (mfopt->is_range_tombstone()) {
+            _tombstones.apply(*_reader.schema(), mfopt->as_range_tombstone());
         }
         return *this;
     }
