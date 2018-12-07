@@ -329,6 +329,7 @@ future<> cache_flat_mutation_reader::read_from_underlying(db::timeout_clock::tim
                                     e.release();
                                     auto next = std::next(it);
                                     it->set_continuous(next->continuous());
+                                    it->set_dummy(true);
                                     clogger.trace("csm {}: inserted dummy at {}, cont={}", this, it->position(), it->continuous());
                                 }
                             });
