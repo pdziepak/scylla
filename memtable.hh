@@ -143,6 +143,35 @@ private:
     mutation_source_opt _underlying;
     uint64_t _flushed_memory = 0;
 
+    class column_tracker {
+        // It's very tempting to just do std::bitset<64> here and accept
+        // false positives, since the majority of schemas is going to have
+        // less than 64 columns. However, for those that have a large number
+        // of columns tracking them accurately may be especially important
+        // (since it saves space in sstables), so there is probably more value
+        // in doing that, than optimising this class.
+        boost::dynamic_bitset<> _static_columns;
+        boost::dynamic_bitset<> _regular_columns;
+    public:
+        explicit column_tracker(const ::schema& s)
+            : _static_columns(s.static_columns_count())
+            , _regular_columns(s.regular_columns_count())
+        { }
+
+        void touch(column_kind kind, column_id id) noexcept {
+            (kind == column_kind::regular_column ? _regular_columns : _static_columns).set(id);
+        }
+
+        void upgrade_schema(const schema& from, const schema& to);
+
+        const boost::dynamic_bitset<>& get_static() const {
+            return _static_columns;
+        }
+        const boost::dynamic_bitset<>& get_regular() const {
+            return _regular_columns;
+        }
+    };
+
     class encoding_stats_collector {
     private:
         const schema* _schema;

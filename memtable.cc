@@ -26,6 +26,34 @@
 #include "schema_upgrader.hh"
 #include "partition_builder.hh"
 
+void memtable::column_tracker::upgrade_schema(const ::schema& from, const ::schema& to) {
+    boost::dynamic_bitset<> new_static_columns(to.static_columns_count());
+
+    auto pos = _static_columns.find_first();
+    while (pos != _static_columns.npos) {
+        auto& col = from.static_column_at(pos);
+        auto new_def = to.get_column_definition(col.name());
+        if (new_def) {
+            new_static_columns[new_def->id] = true;
+        }
+        pos = _static_columns.find_next(pos);
+    }
+
+    boost::dynamic_bitset<> new_regular_columns(to.regular_columns_count());
+    pos = _regular_columns.find_first();
+    while (pos != _regular_columns.npos) {
+        auto& col = from.regular_column_at(pos);
+        auto new_def = to.get_column_definition(col.name());
+        if (new_def) {
+            new_regular_columns[new_def->id] = true;
+        }
+        pos = _regular_columns.find_next(pos);
+    }
+
+    _static_columns = std::move(new_static_columns);
+    _regular_columns = std::move(new_regular_columns);
+}
+
 void memtable::encoding_stats_collector::update_timestamp(api::timestamp_type ts) {
     if (ts != api::missing_timestamp) {
         timestamp.update(ts);
