@@ -66,11 +66,21 @@ private:
     min_tracker<gc_clock::time_point> min_local_deletion_time;
     min_tracker<gc_clock::duration> min_ttl;
 
+    // It's very tempting to just do std::bitset<64> here and accept
+    // false positives, since the majority of schemas is going to have
+    // less than 64 columns. However, for those that have a large number
+    // of columns tracking them accurately may be especially important
+    // (since it saves space in sstables), so there is probably more value
+    // in doing that, than optimising this class.
+    boost::dynamic_bitset<> _static_columns;
+    boost::dynamic_bitset<> _regular_columns;
 public:
-    encoding_stats_collector()
+    encoding_stats_collector(const ::schema& s)
         : min_timestamp(api::max_timestamp)
         , min_local_deletion_time(gc_clock::time_point::max())
         , min_ttl(gc_clock::duration::max())
+        , _static_columns(s.static_columns_count())
+        , _regular_columns(s.regular_columns_count())
     {}
 
     void update_timestamp(api::timestamp_type ts) {
@@ -89,9 +99,34 @@ public:
         update_timestamp(other.min_timestamp);
         update_local_deletion_time(other.min_local_deletion_time);
         update_ttl(other.min_ttl);
+
+        if (!_static_columns.empty()) {
+            if (other.static_columns.empty()) {
+                _static_columns.clear();
+            } else {
+                assert(_static_columns.size() == other.static_columns.size());
+                _static_columns |= other.static_columns;
+            }
+        }
+
+        if (!_regular_columns.empty()) {
+            if (other.regular_columns.empty()) {
+                _regular_columns.clear();
+            } else {
+                assert(_regular_columns.size() == other.regular_columns.size());
+                _regular_columns |= other.regular_columns;
+            }
+        }
+    }
+
+    void visit_column(column_kind kind, column_id id) noexcept {
+        (kind == column_kind::regular_column ? _regular_columns : _static_columns).set(id);
     }
 
     encoding_stats get() const {
-        return { min_timestamp.get(), min_local_deletion_time.get(), min_ttl.get() };
+        return { min_timestamp.get(), min_local_deletion_time.get(), min_ttl.get(),
+                 _static_columns, _regular_columns };
     }
+
+    void upgrade_schema(const schema& from, const schema& to);
 };

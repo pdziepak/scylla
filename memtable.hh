@@ -166,9 +166,7 @@ private:
             return max_timestamp.get();
         }
 
-        void upgrade_schema(const schema& to) noexcept {
-            _schema = &to;
-        }
+        void upgrade_schema(const schema& to) noexcept;
     } _stats_collector;
 
     void update(db::rp_handle&&);

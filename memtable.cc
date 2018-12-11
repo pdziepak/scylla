@@ -26,6 +26,34 @@
 #include "schema_upgrader.hh"
 #include "partition_builder.hh"
 
+void encoding_stats_collector::upgrade_schema(const ::schema& from, const ::schema& to) {
+    boost::dynamic_bitset<> new_static_columns(to.static_columns_count());
+
+    auto pos = _static_columns.find_first();
+    while (pos != _static_columns.npos) {
+        auto& col = from.static_column_at(pos);
+        auto new_def = to.get_column_definition(col.name());
+        if (new_def) {
+            new_static_columns[new_def->id] = true;
+        }
+        pos = _static_columns.find_next(pos);
+    }
+
+    boost::dynamic_bitset<> new_regular_columns(to.regular_columns_count());
+    pos = _regular_columns.find_first();
+    while (pos != _regular_columns.npos) {
+        auto& col = from.regular_column_at(pos);
+        auto new_def = to.get_column_definition(col.name());
+        if (new_def) {
+            new_regular_columns[new_def->id] = true;
+        }
+        pos = _regular_columns.find_next(pos);
+    }
+
+    _static_columns = std::move(new_static_columns);
+    _regular_columns = std::move(new_regular_columns);
+}
+
 void memtable::memtable_encoding_stats_collector::update_timestamp(api::timestamp_type ts) {
     if (ts != api::missing_timestamp) {
         encoding_stats_collector::update_timestamp(ts);
@@ -34,7 +62,8 @@ void memtable::memtable_encoding_stats_collector::update_timestamp(api::timestam
 }
 
 memtable::memtable_encoding_stats_collector::memtable_encoding_stats_collector(const ::schema& s)
-    : _schema(&s)
+    : encoding_stats_collector(s)
+    , _schema(&s)
     , max_timestamp(0)
 {}
 
@@ -57,6 +86,7 @@ void memtable::memtable_encoding_stats_collector::update(tombstone tomb) {
 
 void memtable::memtable_encoding_stats_collector::update(const row& r, column_kind kind) {
     r.for_each_cell([this, kind](column_id id, const atomic_cell_or_collection& item) {
+        visit_column(kind, id);
         auto& col = _schema->column_at(kind, id);
         if (col.is_atomic()) {
             update(item.as_atomic_cell(col));
@@ -112,6 +142,11 @@ void memtable::memtable_encoding_stats_collector::update(const mutation_partitio
     for (auto&& rt : mp.row_tombstones()) {
         update(rt);
     }
+}
+
+void memtable::memtable_encoding_stats_collector::upgrade_schema(const ::schema& to) noexcept {
+    encoding_stats_collector::upgrade_schema(*_schema, to);
+    _schema = &to;
 }
 
 memtable::memtable(schema_ptr schema, dirty_memory_manager& dmm, memtable_list* memtable_list,

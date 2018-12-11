@@ -328,6 +328,7 @@ protected:
         , _sstables(std::move(sstables))
         , _max_sstable_size(max_sstable_size)
         , _sstable_level(sstable_level)
+        , _stats_collector(*cf.schema())
     {
         _info->cf = &cf;
         for (auto sst : _sstables) {
