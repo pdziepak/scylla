@@ -26,6 +26,94 @@
 #include "schema_upgrader.hh"
 #include "partition_builder.hh"
 
+void memtable::encoding_stats_collector::update_timestamp(api::timestamp_type ts) {
+    if (ts != api::missing_timestamp) {
+        timestamp.update(ts);
+    }
+}
+
+memtable::encoding_stats_collector::encoding_stats_collector()
+    : timestamp(api::max_timestamp, 0)
+    , min_local_deletion_time(std::numeric_limits<int32_t>::max())
+    , min_ttl(std::numeric_limits<int32_t>::max())
+{}
+
+void memtable::encoding_stats_collector::update(atomic_cell_view cell) {
+    update_timestamp(cell.timestamp());
+    if (cell.is_live_and_has_ttl()) {
+        min_ttl.update(cell.ttl().count());
+        min_local_deletion_time.update(cell.expiry().time_since_epoch().count());
+    } else if (!cell.is_live()) {
+        min_local_deletion_time.update(cell.deletion_time().time_since_epoch().count());
+    }
+}
+
+void memtable::encoding_stats_collector::update(tombstone tomb) {
+    if (tomb) {
+        update_timestamp(tomb.timestamp);
+        min_local_deletion_time.update(tomb.deletion_time.time_since_epoch().count());
+    }
+}
+
+void memtable::encoding_stats_collector::update(const ::schema& s, const row& r, column_kind kind) {
+    r.for_each_cell([this, &s, kind](column_id id, const atomic_cell_or_collection& item) {
+        auto& col = s.column_at(kind, id);
+        if (col.is_atomic()) {
+            update(item.as_atomic_cell(col));
+        } else {
+            auto ctype = static_pointer_cast<const collection_type_impl>(col.type);
+            item.as_collection_mutation().data.with_linearized([&] (bytes_view bv) {
+            auto mview = ctype->deserialize_mutation_form(bv);
+            // Note: when some of the collection cells are dead and some are live
+            // we need to encode a "live" deletion_time for the living ones.
+            // It is not strictly required to update encoding_stats for the latter case
+            // since { <int64_t>.min(), <int32_t>.max() } will not affect the encoding_stats
+            // minimum values.  (See #4035)
+            update(mview.tomb);
+            for (auto& entry : mview.cells) {
+                update(entry.second);
+            }
+            });
+        }
+    });
+}
+
+void memtable::encoding_stats_collector::update(const range_tombstone& rt) {
+    update(rt.tomb);
+}
+
+void memtable::encoding_stats_collector::update(const row_marker& marker) {
+    update_timestamp(marker.timestamp());
+    if (!marker.is_missing()) {
+        if (!marker.is_live()) {
+            min_ttl.update(sstables::expired_liveness_ttl);
+            min_local_deletion_time.update(marker.deletion_time().time_since_epoch().count());
+        } else if (marker.is_expiring()) {
+            min_ttl.update(marker.ttl().count());
+            min_local_deletion_time.update(marker.expiry().time_since_epoch().count());
+        }
+    }
+}
+
+void memtable::encoding_stats_collector::update(const ::schema& s, const deletable_row& dr) {
+    update(dr.marker());
+    row_tombstone row_tomb = dr.deleted_at();
+    update(row_tomb.regular());
+    update(row_tomb.tomb());
+    update(s, dr.cells(), column_kind::regular_column);
+}
+
+void memtable::encoding_stats_collector::update(const ::schema& s, const mutation_partition& mp) {
+    update(mp.partition_tombstone());
+    update(s, mp.static_row(), column_kind::static_column);
+    for (auto&& row_entry : mp.clustered_rows()) {
+        update(s, row_entry.row());
+    }
+    for (auto&& rt : mp.row_tombstones()) {
+        update(rt);
+    }
+}
+
 memtable::memtable(schema_ptr schema, dirty_memory_manager& dmm, memtable_list* memtable_list,
     seastar::scheduling_group compaction_scheduling_group)
         : logalloc::region(dmm.region_group())
