@@ -614,9 +614,11 @@ inline flat_mutation_reader flat_mutation_reader_from_mutations(std::vector<muta
     return flat_mutation_reader_from_mutations(std::move(ms), query::full_partition_range, fwd);
 }
 flat_mutation_reader
-flat_mutation_reader_from_mutations(std::vector<mutation> ms,
+flat_mutation_reader_from_mutations(const std::vector<mutation>& ms,
                                     const query::partition_slice& slice,
                                     streamed_mutation::forwarding fwd = streamed_mutation::forwarding::no);
+flat_mutation_reader flat_mutation_reader_from_mutations(const std::vector<mutation>& ms, const dht::partition_range& pr,
+    const query::partition_slice& slice, streamed_mutation::forwarding fwd);
 
 /// Make a reader that enables the wrapped reader to work with multiple ranges.
 ///
