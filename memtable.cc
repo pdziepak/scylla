@@ -65,6 +65,7 @@ memtable::encoding_stats_collector::encoding_stats_collector(const ::schema& s)
     , timestamp(api::max_timestamp, 0)
     , min_local_deletion_time(std::numeric_limits<int32_t>::max())
     , min_ttl(std::numeric_limits<int32_t>::max())
+    , _columns(s)
 {}
 
 void memtable::encoding_stats_collector::update(atomic_cell_view cell) {
@@ -86,6 +87,7 @@ void memtable::encoding_stats_collector::update(tombstone tomb) {
 
 void memtable::encoding_stats_collector::update(const row& r, column_kind kind) {
     r.for_each_cell([this, kind](column_id id, const atomic_cell_or_collection& item) {
+        _columns.touch(kind, id);
         auto& col = _schema->column_at(kind, id);
         if (col.is_atomic()) {
             update(item.as_atomic_cell(col));
@@ -141,6 +143,11 @@ void memtable::encoding_stats_collector::update(const mutation_partition& mp) {
     for (auto&& rt : mp.row_tombstones()) {
         update(rt);
     }
+}
+
+encoding_stats memtable::encoding_stats_collector::get() const {
+    return { timestamp.min(), min_local_deletion_time.get(), min_ttl.get(),
+                _columns.get_static(), _columns.get_regular() };
 }
 
 memtable::memtable(schema_ptr schema, dirty_memory_manager& dmm, memtable_list* memtable_list,

@@ -178,6 +178,7 @@ private:
         min_max_tracker<api::timestamp_type> timestamp;
         min_tracker<int32_t> min_local_deletion_time;
         min_tracker<int32_t> min_ttl;
+        column_tracker _columns;
 
         void update_timestamp(api::timestamp_type ts);
 
@@ -193,15 +194,14 @@ private:
         void update(const deletable_row& dr);
         void update(const mutation_partition& mp);
 
-        encoding_stats get() const {
-            return { timestamp.min(), min_local_deletion_time.get(), min_ttl.get() };
-        }
+        encoding_stats get() const;
 
         api::timestamp_type max_timestamp() const {
             return timestamp.max();
         }
 
         void upgrade_schema(const schema& to) noexcept {
+            _columns.upgrade_schema(*_schema, to);
             _schema = &to;
         }
     } _stats_collector;
