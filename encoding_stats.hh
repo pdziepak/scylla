@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include <boost/dynamic_bitset.hpp>
+
 #include "timestamp.hh"
 
 // Stores statistics on all the updates done to a memtable
@@ -48,4 +50,11 @@ struct encoding_stats {
     api::timestamp_type min_timestamp = timestamp_epoch;
     int32_t min_local_deletion_time = deletion_time_epoch;
     int32_t min_ttl = ttl_epoch;
+
+    // Bitmaps of columns present in a sstable.
+    // These bitsets contain either zero elements or one bit per each static or regular column in the schema.
+    // An empty bitset means that all columns are present. If the bitset is not empty then only column which
+    // bit (indexed by the column id) is set.
+    boost::dynamic_bitset<> static_columns{};
+    boost::dynamic_bitset<> regular_columns{};
 };
