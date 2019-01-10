@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include <boost/dynamic_bitset.hpp>
+
 #include "timestamp.hh"
 #include "utils/extremum_tracking.hh"
 
@@ -49,6 +51,13 @@ struct encoding_stats {
     api::timestamp_type min_timestamp = timestamp_epoch;
     gc_clock::time_point min_local_deletion_time = gc_clock::time_point(gc_clock::duration(deletion_time_epoch));
     gc_clock::duration min_ttl = gc_clock::duration(ttl_epoch);
+
+    // Bitmaps of columns present in a sstable.
+    // These bitsets contain either zero elements or one bit per each static or regular column in the schema.
+    // An empty bitset means that all columns are present. If the bitset is not empty then only column which
+    // bit (indexed by the column id) is set.
+    boost::dynamic_bitset<> static_columns{};
+    boost::dynamic_bitset<> regular_columns{};
 };
 
 class encoding_stats_collector {
