@@ -145,24 +145,29 @@ private:
 
     class memtable_encoding_stats_collector : public encoding_stats_collector {
     private:
+        const schema* _schema;
         max_tracker<api::timestamp_type> max_timestamp;
 
         void update_timestamp(api::timestamp_type ts);
 
     public:
-        memtable_encoding_stats_collector();
+        explicit memtable_encoding_stats_collector(const ::schema& s);
         void update(atomic_cell_view cell);
 
         void update(tombstone tomb);
 
-        void update(const ::schema& s, const row& r, column_kind kind);
+        void update(const row& r, column_kind kind);
         void update(const range_tombstone& rt);
         void update(const row_marker& marker);
-        void update(const ::schema& s, const deletable_row& dr);
-        void update(const ::schema& s, const mutation_partition& mp);
+        void update(const deletable_row& dr);
+        void update(const mutation_partition& mp);
 
         api::timestamp_type get_max_timestamp() const {
             return max_timestamp.get();
+        }
+
+        void upgrade_schema(const schema& to) noexcept {
+            _schema = &to;
         }
     } _stats_collector;
 
