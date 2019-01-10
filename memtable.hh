@@ -145,6 +145,7 @@ private:
 
     class encoding_stats_collector {
     private:
+        const schema* _schema;
         min_max_tracker<api::timestamp_type> timestamp;
         min_tracker<int32_t> min_local_deletion_time;
         min_tracker<int32_t> min_ttl;
@@ -152,16 +153,16 @@ private:
         void update_timestamp(api::timestamp_type ts);
 
     public:
-        encoding_stats_collector();
+        explicit encoding_stats_collector(const ::schema& s);
         void update(atomic_cell_view cell);
 
         void update(tombstone tomb);
 
-        void update(const ::schema& s, const row& r, column_kind kind);
+        void update(const row& r, column_kind kind);
         void update(const range_tombstone& rt);
         void update(const row_marker& marker);
-        void update(const ::schema& s, const deletable_row& dr);
-        void update(const ::schema& s, const mutation_partition& mp);
+        void update(const deletable_row& dr);
+        void update(const mutation_partition& mp);
 
         encoding_stats get() const {
             return { timestamp.min(), min_local_deletion_time.get(), min_ttl.get() };
@@ -169,6 +170,10 @@ private:
 
         api::timestamp_type max_timestamp() const {
             return timestamp.max();
+        }
+
+        void upgrade_schema(const schema& to) noexcept {
+            _schema = &to;
         }
     } _stats_collector;
 

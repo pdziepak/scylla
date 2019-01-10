@@ -32,8 +32,9 @@ void memtable::encoding_stats_collector::update_timestamp(api::timestamp_type ts
     }
 }
 
-memtable::encoding_stats_collector::encoding_stats_collector()
-    : timestamp(api::max_timestamp, 0)
+memtable::encoding_stats_collector::encoding_stats_collector(const ::schema& s)
+    : _schema(&s)
+    , timestamp(api::max_timestamp, 0)
     , min_local_deletion_time(std::numeric_limits<int32_t>::max())
     , min_ttl(std::numeric_limits<int32_t>::max())
 {}
@@ -55,9 +56,9 @@ void memtable::encoding_stats_collector::update(tombstone tomb) {
     }
 }
 
-void memtable::encoding_stats_collector::update(const ::schema& s, const row& r, column_kind kind) {
-    r.for_each_cell([this, &s, kind](column_id id, const atomic_cell_or_collection& item) {
-        auto& col = s.column_at(kind, id);
+void memtable::encoding_stats_collector::update(const row& r, column_kind kind) {
+    r.for_each_cell([this, kind](column_id id, const atomic_cell_or_collection& item) {
+        auto& col = _schema->column_at(kind, id);
         if (col.is_atomic()) {
             update(item.as_atomic_cell(col));
         } else {
@@ -95,19 +96,19 @@ void memtable::encoding_stats_collector::update(const row_marker& marker) {
     }
 }
 
-void memtable::encoding_stats_collector::update(const ::schema& s, const deletable_row& dr) {
+void memtable::encoding_stats_collector::update(const deletable_row& dr) {
     update(dr.marker());
     row_tombstone row_tomb = dr.deleted_at();
     update(row_tomb.regular());
     update(row_tomb.tomb());
-    update(s, dr.cells(), column_kind::regular_column);
+    update(dr.cells(), column_kind::regular_column);
 }
 
-void memtable::encoding_stats_collector::update(const ::schema& s, const mutation_partition& mp) {
+void memtable::encoding_stats_collector::update(const mutation_partition& mp) {
     update(mp.partition_tombstone());
-    update(s, mp.static_row(), column_kind::static_column);
+    update(mp.static_row(), column_kind::static_column);
     for (auto&& row_entry : mp.clustered_rows()) {
-        update(s, row_entry.row());
+        update(row_entry.row());
     }
     for (auto&& rt : mp.row_tombstones()) {
         update(rt);
@@ -121,7 +122,9 @@ memtable::memtable(schema_ptr schema, dirty_memory_manager& dmm, memtable_list* 
         , _cleaner(*this, no_cache_tracker, compaction_scheduling_group)
         , _memtable_list(memtable_list)
         , _schema(std::move(schema))
-        , partitions(memtable_entry::compare(_schema)) {
+        , partitions(memtable_entry::compare(_schema))
+        , _stats_collector(*_schema)
+{
 }
 
 static thread_local dirty_memory_manager mgr_for_tests;
@@ -720,8 +723,15 @@ memtable::apply(const mutation& m, db::rp_handle&& h) {
         _allocating_section(*this, [&, this] {
           with_linearized_managed_bytes([&] {
             auto& p = find_or_create_partition(m.decorated_key());
-            _stats_collector.update(*m.schema(), m.partition());
-            p.apply(*_schema, m.partition(), *m.schema());
+            if (_schema->version() != m.schema()->version()) {
+                auto m1 = m;
+                m1.upgrade(_schema);
+                _stats_collector.update(m1.partition());
+                p.apply(*_schema, std::move(m1.partition()), *_schema);
+            } else {
+                _stats_collector.update(m.partition());
+                p.apply(*_schema, m.partition(), *_schema);
+            }
           });
         });
     });
@@ -737,8 +747,11 @@ memtable::apply(const frozen_mutation& m, const schema_ptr& m_schema, db::rp_han
             mutation_partition mp(m_schema);
             partition_builder pb(*m_schema, mp);
             m.partition().accept(*m_schema, pb);
-            _stats_collector.update(*m_schema, mp);
-            p.apply(*_schema, std::move(mp), *m_schema);
+            if (_schema->version() != m_schema->version()) {
+                mp.upgrade(*m_schema, *_schema);
+            }
+            _stats_collector.update(mp);
+            p.apply(*_schema, std::move(mp), *_schema);
           });
         });
     });
@@ -801,6 +814,7 @@ void memtable::upgrade_entry(memtable_entry& e) {
 }
 
 void memtable::set_schema(schema_ptr new_schema) noexcept {
+    _stats_collector.upgrade_schema(*new_schema);
     _schema = std::move(new_schema);
 }
 
