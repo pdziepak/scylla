@@ -385,6 +385,9 @@ serialization_header make_serialization_header(const schema& s, const encoding_s
 
     header.static_columns.elements.reserve(s.static_columns_count());
     for (const auto& static_column : s.static_columns()) {
+        if (!enc_stats.static_columns.empty() && !enc_stats.static_columns[static_column.id]) {
+            continue;
+        }
         serialization_header::column_desc cd;
         cd.name = to_bytes_array_vint_size(static_column.name());
         cd.type_name = to_bytes_array_vint_size(static_column.type->name());
@@ -393,6 +396,9 @@ serialization_header make_serialization_header(const schema& s, const encoding_s
 
     header.regular_columns.elements.reserve(s.regular_columns_count());
     for (const auto& regular_column : s.regular_columns()) {
+        if (!enc_stats.regular_columns.empty() && !enc_stats.regular_columns[regular_column.id]) {
+            continue;
+        }
         serialization_header::column_desc cd;
         cd.name = to_bytes_array_vint_size(regular_column.name());
         cd.type_name = to_bytes_array_vint_size(regular_column.type->name());
@@ -505,10 +511,11 @@ concept bool Clustered = requires(T t) {
 };
 )
 
-static indexed_columns get_indexed_columns_partitioned_by_atomicity(schema::const_iterator_range_type columns) {
+static indexed_columns get_indexed_columns_partitioned_by_atomicity(schema::const_iterator_range_type columns,
+                                                                    const boost::dynamic_bitset<>& present_columns) {
     indexed_columns result;
     result.reserve(columns.size());
-    for (const auto& col: columns) {
+    for (const auto& col: columns | boost::adaptors::filtered([&] (auto& col) { return present_columns.empty() || present_columns[col.id]; })) {
         result.emplace_back(col);
     }
     boost::range::stable_partition(
@@ -715,8 +722,8 @@ public:
         , _shard(shard)
         , _range_tombstones(_schema)
         , _tmp_bufs(_sst.sstable_buffer_size)
-        , _static_columns(get_indexed_columns_partitioned_by_atomicity(s.static_columns()))
-        , _regular_columns(get_indexed_columns_partitioned_by_atomicity(s.regular_columns()))
+        , _static_columns(get_indexed_columns_partitioned_by_atomicity(s.static_columns(), _enc_stats.static_columns))
+        , _regular_columns(get_indexed_columns_partitioned_by_atomicity(s.regular_columns(), _enc_stats.regular_columns))
         , _run_identifier(cfg.run_identifier)
     {
         _sst.generate_toc(_schema.get_compressor_params().get_compressor(), _schema.bloom_filter_fp_chance());
@@ -1060,10 +1067,6 @@ void writer::write_collection(bytes_ostream& writer, const column_definition& cd
 
 void writer::write_cells(bytes_ostream& writer, column_kind kind, const row& row_body,
     const row_time_properties& properties, bool has_complex_deletion) {
-    // Note that missing columns are written based on the whole set of regular columns as defined by schema.
-    // This differs from Origin where all updated columns are tracked and the set of filled columns of a row
-    // is compared with the set of all columns filled in the memtable. So our encoding may be less optimal in some cases
-    // but still valid.
     write_missing_columns(writer, kind == column_kind::static_column ? _static_columns : _regular_columns, row_body);
     row_body.for_each_cell([this, &writer, kind, &properties, has_complex_deletion] (column_id id, const atomic_cell_or_collection& c) {
         auto&& column_definition = _schema.column_at(kind, id);
