@@ -33,6 +33,8 @@
 #include "mutation_assertions.hh"
 #include "flat_mutation_reader_assertions.hh"
 #include "flat_mutation_reader.hh"
+#include "tests_data_model.hh"
+#include "random-utils.hh"
 
 static api::timestamp_type next_timestamp() {
     static thread_local api::timestamp_type next_timestamp = 1;
@@ -558,5 +560,113 @@ SEASTAR_TEST_CASE(test_hash_is_cached) {
             clustering_row row = std::move(rd(db::no_timeout).get0()->as_mutable_clustering_row());
             BOOST_REQUIRE(row.cells().cell_hash_for(0));
         }
+    });
+}
+
+SEASTAR_THREAD_TEST_CASE(test_collecting_encoding_stats) {
+    auto random_int32_value = [] {
+        return int32_type->decompose(tests::random::get_int<int32_t>());
+    };
+
+    auto td = tests::data_model::table_description({ { "pk", int32_type } }, { { "ck", utf8_type } });
+
+    auto td1 = td;
+    td1.add_static_column("s1", int32_type);
+    td1.add_regular_column("v1", int32_type);
+    td1.add_regular_column("v2", int32_type);
+    auto built_schema = td1.build();
+    auto s = built_schema.schema;
+
+    auto md1 = tests::data_model::mutation_description({ to_bytes("pk1") });
+    md1.add_clustered_cell({ to_bytes("ck1") }, "v1", random_int32_value());
+    auto m1 = md1.build(s);
+
+    auto md2 = tests::data_model::mutation_description({ to_bytes("pk2") });
+    md2.add_clustered_cell({ to_bytes("ck1") }, "v1", random_int32_value());
+    md2.add_clustered_cell({ to_bytes("ck2") }, "v2", random_int32_value());
+    auto m2 = md2.build(s);
+
+    auto md3 = tests::data_model::mutation_description({ to_bytes("pk3") });
+    md3.add_static_cell("s1", random_int32_value());
+    auto m3 = md3.build(s);
+
+    auto mt = make_lw_shared<memtable>(s);
+
+    auto stats = mt->get_encoding_stats();
+    BOOST_CHECK_EQUAL(stats.static_columns.size(), 1);
+    BOOST_CHECK(!stats.static_columns.test(0));
+    BOOST_CHECK_EQUAL(stats.regular_columns.size(), 2);
+    BOOST_CHECK(!stats.regular_columns.test(0) && !stats.regular_columns.test(1));
+
+    mt->apply(m1);
+    stats = mt->get_encoding_stats();
+    BOOST_CHECK_EQUAL(stats.static_columns.size(), 1);
+    BOOST_CHECK(!stats.static_columns.test(0));
+    BOOST_CHECK_EQUAL(stats.regular_columns.size(), 2);
+    BOOST_CHECK(stats.regular_columns.test(0) && !stats.regular_columns.test(1));
+
+    mt->apply(m2);
+    stats = mt->get_encoding_stats();
+    BOOST_CHECK_EQUAL(stats.static_columns.size(), 1);
+    BOOST_CHECK(!stats.static_columns.test(0));
+    BOOST_CHECK_EQUAL(stats.regular_columns.size(), 2);
+    BOOST_CHECK(stats.regular_columns.test(0) && stats.regular_columns.test(1));
+
+    mt->apply(m3);
+    stats = mt->get_encoding_stats();
+    BOOST_CHECK_EQUAL(stats.static_columns.size(), 1);
+    BOOST_CHECK(stats.static_columns.test(0));
+    BOOST_CHECK_EQUAL(stats.regular_columns.size(), 2);
+    BOOST_CHECK(stats.regular_columns.test(0) && stats.regular_columns.test(1));
+
+    auto td2 = td;
+    td2.add_static_column("s2", int32_type);
+    td2.add_regular_column("v0", int32_type);
+    td2.add_regular_column("v1", int32_type);
+    td2.add_regular_column("v3", int32_type);
+    built_schema = td2.build();
+    auto s2 = built_schema.schema;
+
+    mt->set_schema(s2);
+    stats = mt->get_encoding_stats();
+    BOOST_CHECK_EQUAL(stats.static_columns.size(), 1);
+    BOOST_CHECK(!stats.static_columns.test(0));
+    BOOST_CHECK_EQUAL(stats.regular_columns.size(), 3);
+    BOOST_CHECK(!stats.regular_columns.test(0) && stats.regular_columns.test(1) && !stats.regular_columns.test(2));
+}
+
+SEASTAR_THREAD_TEST_CASE(test_collecting_encoding_stats_schema_changes) {
+    for_each_schema_change([] (schema_ptr base, const std::vector<mutation>& base_mutations,
+                               schema_ptr altered, const std::vector<mutation>& altered_mutations) {
+        auto mt1 = make_lw_shared<memtable>(base);
+        for (auto& m : base_mutations) {
+            mt1->apply(m);
+        }
+        mt1->set_schema(altered);
+
+        auto mt2 = make_lw_shared<memtable>(altered);
+        for (auto& m : base_mutations) {
+            mt2->apply(m);
+        }
+
+        auto mt3 = make_lw_shared<memtable>(altered);
+        for (auto& m : altered_mutations) {
+            mt3->apply(m);
+        }
+
+        auto stats1 = mt1->get_encoding_stats();
+        auto stats2 = mt2->get_encoding_stats();
+        auto stats3 = mt3->get_encoding_stats();
+
+        // False positives are allowed
+        BOOST_CHECK_EQUAL(stats1.static_columns.size(), stats3.static_columns.size());
+        BOOST_CHECK_EQUAL(stats2.static_columns.size(), stats3.static_columns.size());
+        BOOST_CHECK((stats3.static_columns & stats1.static_columns.flip()).none());
+        BOOST_CHECK((stats3.static_columns & stats2.static_columns.flip()).none());
+
+        BOOST_CHECK_EQUAL(stats1.regular_columns.size(), stats3.regular_columns.size());
+        BOOST_CHECK_EQUAL(stats2.regular_columns.size(), stats3.regular_columns.size());
+        BOOST_CHECK((stats3.regular_columns & stats1.regular_columns.flip()).none());
+        BOOST_CHECK((stats3.regular_columns & stats2.regular_columns.flip()).none());
     });
 }
