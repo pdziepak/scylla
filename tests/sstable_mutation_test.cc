@@ -42,6 +42,8 @@
 #include "simple_schema.hh"
 #include "tests/sstable_utils.hh"
 #include "tests/make_random_string.hh"
+#include "tests_data_model.hh"
+#include "random-utils.hh"
 
 using namespace sstables;
 using namespace std::chrono_literals;
@@ -1473,4 +1475,47 @@ SEASTAR_THREAD_TEST_CASE(test_schema_changes) {
             mr.produces_end_of_stream();
         }
     });
+}
+
+SEASTAR_THREAD_TEST_CASE(test_reading_serialization_header) {
+    auto dir = make_lw_shared<tmpdir>();
+    storage_service_for_tests ssft;
+    auto wait_bg = seastar::defer([] { sstables::await_background_jobs().get(); });
+
+    auto random_int32_value = [] {
+        return int32_type->decompose(tests::random::get_int<int32_t>());
+    };
+
+    auto td = tests::data_model::table_description({ { "pk", int32_type } }, { { "ck", utf8_type } });
+
+    auto td1 = td;
+    td1.add_static_column("s1", int32_type);
+    td1.add_regular_column("v1", int32_type);
+    td1.add_regular_column("v2", int32_type);
+    auto built_schema = td1.build();
+    auto s = built_schema.schema;
+
+    auto md1 = tests::data_model::mutation_description({ to_bytes("pk1") });
+    md1.add_clustered_cell({ to_bytes("ck1") }, "v1", random_int32_value());
+    auto m1 = md1.build(s);
+
+    auto md2 = tests::data_model::mutation_description({ to_bytes("pk2") });
+    md2.add_static_cell("s1", random_int32_value());
+    auto m2 = md2.build(s);
+
+    auto mt = make_lw_shared<memtable>(s);
+    mt->apply(m1);
+    mt->apply(m2);
+
+    auto sst = sstables::make_sstable(s, dir->path, 1, sstable::version_types::mc, sstables::sstable::format_types::big);
+    sstable_writer_config cfg;
+    cfg.large_partition_handler = &nop_lp_handler;
+    sst->write_components(mt->make_flat_reader(s), 2, s, cfg, mt->get_encoding_stats()).get();
+    sst->load().get();
+
+    auto hdr = sst->get_serialization_header();
+    BOOST_CHECK_EQUAL(hdr.static_columns.elements.size(), 1);
+    BOOST_CHECK_EQUAL(hdr.static_columns.elements[0].name.value, to_bytes("s1"));
+    BOOST_CHECK_EQUAL(hdr.regular_columns.elements.size(), 1);
+    BOOST_CHECK(hdr.regular_columns.elements[0].name.value == to_bytes("v1"));
 }
