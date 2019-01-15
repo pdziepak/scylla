@@ -1589,3 +1589,64 @@ SEASTAR_THREAD_TEST_CASE(test_missing_columns) {
         .produces(table.mutations)
         .produces_end_of_stream();
 }
+
+SEASTAR_THREAD_TEST_CASE(test_merging_encoding_stats) {
+    auto s = schema_builder ("ks", "cf")
+        .with_column("p", utf8_type, column_kind::partition_key)
+        .with_column("s1", int32_type, column_kind::static_column)
+        .with_column("s2", int32_type, column_kind::static_column)
+        .with_column("s3", int32_type, column_kind::static_column)
+        .with_column("s4", int32_type, column_kind::static_column)
+        .with_column("r1", int32_type)
+        .with_column("r2", int32_type)
+        .with_column("r3", int32_type)
+        .build();
+
+    auto ecc = encoding_stats_collector{*s};
+    auto ec1 = encoding_stats{};
+
+    ecc.update(ec1);
+    auto ec = ecc.get();
+    BOOST_CHECK(ec.static_columns.empty());
+    BOOST_CHECK(ec.regular_columns.empty());
+
+    ec1.static_columns.resize(4);
+    ec1.static_columns.set(1);
+    ec1.static_columns.set(3);
+    ec1.regular_columns.resize(3);
+    ec1.regular_columns.set(0);
+
+    ecc.update(ec1);
+    ec = ecc.get();
+    BOOST_CHECK(ec.static_columns.empty());
+    BOOST_CHECK(ec.regular_columns.empty());
+
+    ecc = encoding_stats_collector{*s};
+    ecc.update(ec1);
+    ec = ecc.get();
+    BOOST_CHECK_EQUAL(ec.static_columns.size(), 4);
+    BOOST_CHECK(ec.static_columns == ec1.static_columns);
+    BOOST_CHECK(ec.regular_columns == ec1.regular_columns);
+
+    ecc.update(encoding_stats{});
+    ec = ecc.get();
+    BOOST_CHECK(ec.static_columns.empty());
+    BOOST_CHECK(ec.regular_columns.empty());
+
+    auto ec2 = encoding_stats{};
+    ec2.static_columns.resize(4);
+    ec2.static_columns.set(0);
+    ec2.regular_columns.resize(3);
+    ec2.regular_columns.set(0);
+    ec2.regular_columns.set(2);
+
+    ecc = encoding_stats_collector{*s};
+    ecc.update(ec1);
+    ecc.update(ec2);
+    ec = ecc.get();
+    BOOST_CHECK_EQUAL(ec.static_columns.size(), 4);
+    BOOST_CHECK(ec.static_columns[0] && ec.static_columns[1]
+        && !ec.static_columns[2] && ec.static_columns[3]);
+    BOOST_CHECK_EQUAL(ec.regular_columns.size(), 3);
+    BOOST_CHECK(ec.regular_columns[0] && !ec.regular_columns[1] && ec.regular_columns[2]);
+}
