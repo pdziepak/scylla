@@ -2326,7 +2326,7 @@ void sstable_writer_k_l::consume_end_of_stream()
 sstable_writer::sstable_writer(sstable& sst, const schema& s, uint64_t estimated_partitions,
         const sstable_writer_config& cfg, encoding_stats enc_stats, const io_priority_class& pc, shard_id shard) {
     if (sst.get_version() == sstable_version_types::mc) {
-        _impl = mc::make_writer(sst, s, estimated_partitions, cfg, enc_stats, pc, shard);
+        _impl = mc::make_writer(sst, s, estimated_partitions, cfg, std::move(enc_stats), pc, shard);
     } else {
         _impl = std::make_unique<sstable_writer_k_l>(sst, s, estimated_partitions, cfg, pc, shard);
     }
@@ -2388,7 +2388,7 @@ future<> sstable::seal_sstable(bool backup)
 sstable_writer sstable::get_writer(const schema& s, uint64_t estimated_partitions,
         const sstable_writer_config& cfg, encoding_stats enc_stats, const io_priority_class& pc, shard_id shard)
 {
-    return sstable_writer(*this, s, estimated_partitions, cfg, enc_stats, pc, shard);
+    return sstable_writer(*this, s, estimated_partitions, cfg, std::move(enc_stats), pc, shard);
 }
 
 // Encoding stats for compaction are based on the sstable's stats metadata
@@ -2415,8 +2415,8 @@ future<> sstable::write_components(
     if (cfg.replay_position) {
         _collector.set_replay_position(cfg.replay_position.value());
     }
-    return seastar::async([this, mr = std::move(mr), estimated_partitions, schema = std::move(schema), cfg, stats, &pc] () mutable {
-        auto wr = get_writer(*schema, estimated_partitions, cfg, stats, pc);
+    return seastar::async([this, mr = std::move(mr), estimated_partitions, schema = std::move(schema), cfg, stats = std::move(stats), &pc] () mutable {
+        auto wr = get_writer(*schema, estimated_partitions, cfg, std::move(stats), pc);
         mr.consume_in_thread(std::move(wr), db::no_timeout);
     });
 }

@@ -711,7 +711,7 @@ public:
         const sstable_writer_config& cfg, encoding_stats enc_stats,
         const io_priority_class& pc, shard_id shard = engine().cpu_id())
         : sstable_writer::writer_impl(sst, s, pc, cfg)
-        , _enc_stats(enc_stats)
+        , _enc_stats(std::move(enc_stats))
         , _shard(shard)
         , _range_tombstones(_schema)
         , _tmp_bufs(_sst.sstable_buffer_size)
