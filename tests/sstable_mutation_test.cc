@@ -1519,3 +1519,50 @@ SEASTAR_THREAD_TEST_CASE(test_reading_serialization_header) {
     BOOST_CHECK_EQUAL(hdr.regular_columns.elements.size(), 1);
     BOOST_CHECK(hdr.regular_columns.elements[0].name.value == to_bytes("v1"));
 }
+
+SEASTAR_THREAD_TEST_CASE(test_missing_columns) {
+    auto dir = make_lw_shared<tmpdir>();
+    storage_service_for_tests ssft;
+    auto wait_bg = seastar::defer([] { sstables::await_background_jobs().get(); });
+
+    auto random_int32_value = [] {
+        return int32_type->decompose(tests::random::get_int<int32_t>());
+    };
+
+    auto td = tests::data_model::table_description({ { "pk", int32_type } }, { { "ck", utf8_type } });
+    td.add_static_column("s1", int32_type);
+    td.add_static_column("s2", int32_type);
+    td.add_regular_column("v1", int32_type);
+    td.add_regular_column("v2", int32_type);
+    td.add_regular_column("v3", int32_type);
+
+    {
+        auto md = tests::data_model::mutation_description({ to_bytes("pk1") });
+        md.add_clustered_cell({ to_bytes("ck1") }, "v1", random_int32_value());
+        md.add_clustered_cell({ to_bytes("ck2") }, "v3", random_int32_value());
+        td.unordered_mutations().emplace_back(std::move(md));
+    }
+    {
+        auto md = tests::data_model::mutation_description({ to_bytes("pk2") });
+        md.add_static_cell("s1", random_int32_value());
+        md.add_clustered_cell({ to_bytes("ck1") }, "v1", random_int32_value());
+        td.unordered_mutations().emplace_back(std::move(md));
+    }
+
+    auto table = td.build();
+
+    auto mt = make_lw_shared<memtable>(table.schema);
+    for (auto& m : table.mutations) {
+        mt->apply(m);
+    }
+
+    auto sst = sstables::make_sstable(table.schema, dir->path, 1, sstable::version_types::mc, sstables::sstable::format_types::big);
+    sstable_writer_config cfg;
+    cfg.large_partition_handler = &nop_lp_handler;
+    sst->write_components(mt->make_flat_reader(table.schema), 2, table.schema, cfg, mt->get_encoding_stats()).get();
+    sst->load().get();
+
+    assert_that(sst->as_mutation_source().make_reader(table.schema, dht::partition_range::make_open_ended_both_sides(), table.schema->full_slice()))
+        .produces(table.mutations)
+        .produces_end_of_stream();
+}
