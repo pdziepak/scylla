@@ -4744,6 +4744,7 @@ SEASTAR_THREAD_TEST_CASE(test_regular_and_shadowable_deletion) {
 SEASTAR_THREAD_TEST_CASE(test_write_static_row_with_missing_columns) {
     auto abj = defer([] { await_background_jobs().get(); });
     sstring table_name = "static_row_with_missing_columns";
+    // Created with Cassandra docker container: cassandra:3.11.3
     // CREATE TABLE static_row (pk int, ck int, st1 int static, st2 int static, rc int, PRIMARY KEY (pk, ck)) WITH compression = {'sstable_compression': ''};
     schema_builder builder("sst3", table_name);
     builder.with_column("pk", int32_type, column_kind::partition_key);
@@ -4772,6 +4773,7 @@ SEASTAR_THREAD_TEST_CASE(test_write_static_row_with_missing_columns) {
 SEASTAR_THREAD_TEST_CASE(test_write_interleaved_atomic_and_collection_columns) {
     auto abj = defer([] { await_background_jobs().get(); });
     sstring table_name = "interleaved_atomic_and_collection_columns";
+    // Created with Cassandra docker container: cassandra:3.11.3
     // CREATE TABLE interleaved_atomic_and_collection_columns ( pk int, ck int, rc1 int, rc2 set<int>, rc3 int, rc4 set<int>,
     //     rc5 int, rc6 set<int>, PRIMARY KEY (pk, ck)) WITH compression = {'sstable_compression': ''};
     auto set_of_ints_type = set_type_impl::get_instance(int32_type, true);
@@ -4813,6 +4815,7 @@ SEASTAR_THREAD_TEST_CASE(test_write_interleaved_atomic_and_collection_columns) {
 SEASTAR_THREAD_TEST_CASE(test_write_static_interleaved_atomic_and_collection_columns) {
     auto abj = defer([] { await_background_jobs().get(); });
     sstring table_name = "static_interleaved_atomic_and_collection_columns";
+    // Created with Cassandra docker container: cassandra:3.11.3
     // CREATE TABLE static_interleaved_atomic_and_collection_columns ( pk int, ck int, st1 int static,
     //     st2 set<int> static, st3 int static, st4 set<int> static, st5 int static, st6 set<int> static,
     //     PRIMARY KEY (pk, ck)) WITH compression = {'sstable_compression': ''};
