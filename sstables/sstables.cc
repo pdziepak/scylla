@@ -2395,12 +2395,35 @@ sstable_writer sstable::get_writer(const schema& s, uint64_t estimated_partition
 // since, in contract to the mc-format encoding_stats that are evaluated
 // before the sstable data is written, the stats metadata is updated during
 // writing so it provides actual minimum values of the written timestamps.
-encoding_stats sstable::get_encoding_stats_for_compaction() const {
+//
+// However, at the moment statistics metadata doesn't store any information
+// about which columns are present in the sstable. For that we still need to
+// use the serialisation header which is not optimal for the reasons stated
+// above.
+encoding_stats sstable::get_encoding_stats_for_compaction(const schema& s) const {
     encoding_stats enc_stats;
 
     enc_stats.min_timestamp = _c_stats.timestamp_tracker.min();
     enc_stats.min_local_deletion_time = gc_clock::time_point(gc_clock::duration(_c_stats.local_deletion_time_tracker.min()));
     enc_stats.min_ttl = gc_clock::duration(_c_stats.ttl_tracker.min());
+
+    if (_version == sstable_version_types::mc) {
+        auto& serialization_header = get_serialization_header();
+        enc_stats.static_columns.resize(s.static_columns_count());
+        for (auto& column : serialization_header.static_columns.elements) {
+            auto def = s.get_column_definition(column.name.value);
+            if (def && def->kind == column_kind::static_column) {
+                enc_stats.static_columns.set(def->id);
+            }
+        }
+        enc_stats.regular_columns.resize(s.regular_columns_count());
+        for (auto& column : serialization_header.regular_columns.elements) {
+            auto def = s.get_column_definition(column.name.value);
+            if (def && def->kind == column_kind::regular_column) {
+                enc_stats.regular_columns.set(def->id);
+            }
+        }
+    }
 
     return enc_stats;
 }

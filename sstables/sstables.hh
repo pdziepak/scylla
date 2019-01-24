@@ -268,7 +268,7 @@ public:
         const io_priority_class& pc = default_priority_class(),
         shard_id shard = engine().cpu_id());
 
-    encoding_stats get_encoding_stats_for_compaction() const;
+    encoding_stats get_encoding_stats_for_compaction(const schema& s) const;
 
     future<> seal_sstable(bool backup);
 

@@ -332,7 +332,7 @@ protected:
     {
         _info->cf = &cf;
         for (auto sst : _sstables) {
-            _stats_collector.update(sst->get_encoding_stats_for_compaction());
+            _stats_collector.update(sst->get_encoding_stats_for_compaction(*cf.schema()));
         }
         _cf.get_compaction_manager().register_compaction(_info);
     }
