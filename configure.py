@@ -892,6 +892,7 @@ deps['tests/imr_test'] = ['tests/imr_test.cc', 'utils/logalloc.cc', 'utils/dynam
 deps['tests/reusable_buffer_test'] = ['tests/reusable_buffer_test.cc']
 deps['tests/utf8_test'] = ['utils/utf8.cc', 'tests/utf8_test.cc']
 deps['tests/small_vector_test'] = ['tests/small_vector_test.cc']
+deps['tests/vint_serialization_test'] = ['tests/vint_serialization_test.cc', 'vint-serialization.cc', 'bytes.cc']
 
 deps['utils/gz/gen_crc_combine_table'] = ['utils/gz/gen_crc_combine_table.cc']
 
