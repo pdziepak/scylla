@@ -730,8 +730,7 @@ public:
                 }
                 return repeat([this, size, &off, &view] {
                     auto&& priority_class = service::get_local_commitlog_priority();
-                    auto current = *view.begin();
-                    return _file.dma_write(off, current.data(), current.size(), priority_class).then_wrapped([this, size, &off, &view](future<size_t>&& f) {
+                    return _file.dma_write(off, view.iovecs(), priority_class).then_wrapped([this, size, &off, &view](future<size_t>&& f) {
                         try {
                             auto bytes = std::get<0>(f.get());
                             _segment_manager->totals.bytes_written += bytes;
