@@ -23,6 +23,8 @@
 
 #include <vector>
 
+#include <boost/range/adaptor/transformed.hpp>
+
 #include <seastar/core/iostream.hh>
 #include <seastar/core/print.hh>
 #include <seastar/core/temporary_buffer.hh>
@@ -200,6 +202,15 @@ public:
     void remove_suffix(size_t n) noexcept {
         _total_size -= n;
         _current_size = std::min(_current_size, _total_size);
+    }
+
+    std::vector<iovec> iovecs() const {
+        return boost::copy_range<std::vector<iovec>>(
+            *this
+            | boost::adaptors::transformed([] (bytes_view fragment) {
+                return iovec { const_cast<bytes_view::value_type*>(fragment.data()), fragment.size() };
+            })
+        );
     }
 
     bool operator==(const fragmented_temporary_buffer::view& other) const noexcept {

@@ -113,11 +113,18 @@ SEASTAR_THREAD_TEST_CASE(test_view) {
         BOOST_CHECK(called);
 
         auto data_it = data_view.begin();
+        auto iovs = view.iovecs();
+        auto iovs_it = iovs.begin();
         for (auto&& frag : view) {
             BOOST_CHECK_LE(frag.size(), data_view.end() - data_it);
             BOOST_CHECK(std::equal(frag.begin(), frag.end(), data_it));
+            BOOST_CHECK(iovs_it != iovs.end());
+            BOOST_CHECK_EQUAL(iovs_it->iov_base, static_cast<const void*>(frag.data()));
+            BOOST_CHECK_EQUAL(iovs_it->iov_len, frag.size());
+            ++iovs_it;
             data_it += frag.size();
         }
+        BOOST_CHECK(iovs_it == iovs.end());
         BOOST_CHECK(data_it == data_view.end());
     };
 
